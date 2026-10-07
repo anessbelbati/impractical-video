@@ -143,20 +143,24 @@ export function agentCliLaunch(
   if (platform !== "win32" || (extension !== ".cmd" && extension !== ".bat")) {
     return { args, command: file };
   }
-  const directory = path.dirname(file);
-  let shim: ReturnType<typeof commandShimTarget> = null;
-  try {
-    shim = commandShimTarget(readFileSync(file, "utf8"));
-  } catch { /* Unreadable launchers take the cmd.exe route below. */ }
-  const target = shim ? path.join(directory, ...shim.target.split(/[\\/]+/)) : null;
-  if (shim && target && existsSync(target)) {
+  // Yarn's launcher forwards to a second launcher, which starts the program.
+  let launcher = file;
+  for (let hop = 0; hop < 4; hop += 1) {
+    const directory = path.dirname(launcher);
+    let shim: ReturnType<typeof commandShimTarget> = null;
+    try {
+      shim = commandShimTarget(readFileSync(launcher, "utf8"));
+    } catch { /* Unreadable launchers take the cmd.exe route below. */ }
+    const target = shim ? path.join(directory, ...shim.target.split(/[\\/]+/)) : null;
+    if (!shim || !target || !existsSync(target)) break;
     if (shim.interpreter === "node") {
       const bundledNode = path.join(directory, "node.exe");
       return { args: [target, ...args], command: existsSync(bundledNode) ? bundledNode : "node" };
     }
-    if (shim.interpreter === null && /\.(?:exe|com)$/i.test(target)) {
-      return { args, command: target };
-    }
+    if (shim.interpreter !== null) break;
+    if (/\.(?:exe|com)$/i.test(target)) return { args, command: target };
+    if (!/\.(?:cmd|bat)$/i.test(target)) break;
+    launcher = target;
   }
   if (/["%]/.test(file) || !args.every((argument) => /^[A-Za-z0-9@_.:=+/\\-]+$/.test(argument))) {
     throw new Error(
