@@ -92,12 +92,19 @@ async function installCommand(
   environment: NodeJS.ProcessEnv,
 ): Promise<[string, string[]]> {
   if (agent === "claude") {
-    return process.platform === "win32"
-      ? [
-          windowsSystemProgram("WindowsPowerShell", "v1.0", "powershell.exe"),
-          ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "irm https://claude.ai/install.ps1 | iex"],
-        ]
-      : ["/bin/bash", ["-c", "curl -fsSL https://claude.ai/install.sh | bash"]];
+    if (process.platform !== "win32") {
+      return ["/bin/bash", ["-c", "curl -fsSL https://claude.ai/install.sh | bash"]];
+    }
+    // An app started from PowerShell 7 inherits its module path, which hides
+    // Windows PowerShell's own Get-FileHash from the installer. Without the
+    // variable Windows PowerShell falls back to its own modules.
+    for (const key of Object.keys(environment)) {
+      if (key.toUpperCase() === "PSMODULEPATH") delete environment[key];
+    }
+    return [
+      windowsSystemProgram("WindowsPowerShell", "v1.0", "powershell.exe"),
+      ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "irm https://claude.ai/install.ps1 | iex"],
+    ];
   }
   const npm = await resolveCommand("npm", environment);
   if (!npm) throw new Error("npm was not found. Install Node.js, then connect Codex again.");
