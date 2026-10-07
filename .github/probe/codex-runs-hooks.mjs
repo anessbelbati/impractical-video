@@ -193,6 +193,11 @@ async function onePrompt(title, { approve = true } = {}) {
     // The setting the Codex project's own tests use to run a hook nobody has approved by hand.
     const thread = await server.request("thread/start", { ...(approve ? { config: { bypass_hook_trust: true } } : {}), cwd: project.projectRoot, ephemeral: true, model: "mock-model" });
     if (thread.error) return console.log("thread/start failed:", JSON.stringify(thread.error));
+    // Codex starts a project's tool servers while it opens the thread and does not hold the first
+    // prompt back for them. A person takes longer to type than a server takes to start; this
+    // probe does not, so it waits for Codex's own word on the app's tool server.
+    const toolServer = await server.until((message) => message.method === "mcpServer/startupStatus/updated" && message.params?.name === "video-fs" && message.params?.status !== "starting", 30_000);
+    console.log("Codex on the app's tool server:", toolServer ? JSON.stringify({ status: toolServer.params.status, error: toolServer.params.error ?? undefined }) : "said nothing within 30 seconds");
     const turn = await server.request("turn/start", { input: [{ text: prompt, type: "text" }], threadId: thread.result.thread.id });
     if (turn.error) return console.log("turn/start failed:", JSON.stringify(turn.error));
     const end = await server.until((message) => message.method === "turn/completed", 120_000);
