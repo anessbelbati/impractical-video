@@ -53,6 +53,7 @@ test("packaging manifest includes the self-contained setup helper", async () => 
   assert.ok(manifest.build.files.includes("agent-context-hook.mjs"));
   assert.ok(manifest.build.files.includes("setup-agent.mjs"));
   assert.ok(manifest.build.files.includes("main.mjs"));
+  assert.ok(manifest.build.files.includes("standard-input.mjs"));
   assert.ok(
     manifest.build.extraResources.some(
       (entry) => entry.from === "../skills" && entry.to === "skills",
