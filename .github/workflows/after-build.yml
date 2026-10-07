@@ -1,9 +1,10 @@
 name: Second session
-# Work in progress on this fork only. In the full pass three browser tests failed in a dev-server
-# session that came after an earlier session, "npm run setup" and "npm run build" in one folder:
-# addresses under /api/projects/<id>/ answered with the not-found page. A job that ran setup
-# before its first session never showed it. Each order below runs on the project's unchanged
-# main branch, one per machine, to see which step it takes. The last one is the working branch.
+# Work in progress on this fork only. On the project's unchanged main branch a second run of the
+# browser suite in one folder sometimes loses three addresses under /api/projects/<id>/ (they
+# answer with the not-found page), and three tests fail. Round 9 saw it after "suite, setup,
+# build" and after "suite, setup, then .env.local removed again", and not after four other
+# orders, once each. This repeats five orders four times each to tell an order from chance, and
+# runs one of them on macOS.
 on:
   workflow_dispatch:
   push:
@@ -14,44 +15,34 @@ env:
   NEXT_TELEMETRY_DISABLED: "1"
 jobs:
   order:
-    name: ${{ matrix.name }}
+    name: ${{ matrix.order }}-${{ matrix.try }}${{ matrix.os == 'macos-latest' && '-mac' || '' }}
     strategy:
       fail-fast: false
       matrix:
+        order:
+          - suite-setup-build-suite
+          - suite-setup-suite
+          - suite-suite
+          - suite-setup-build-rmdev-suite
+          - suite-setup-rmenv-suite
+        try: [1, 2, 3, 4]
+        os: [ubuntu-latest]
         include:
-          - name: main-suite-setup-build-suite
-            ref: main
-            sequence: suite setup build suite
-          - name: main-suite-setup-suite
-            ref: main
-            sequence: suite setup suite
-          - name: main-suite-build-suite
-            ref: main
-            sequence: suite build suite
-          - name: main-suite-suite
-            ref: main
-            sequence: suite suite
-          - name: main-setup-suite-build-suite
-            ref: main
-            sequence: setup suite build suite
-          - name: main-suite-setup-build-rmdev-suite
-            ref: main
-            sequence: suite setup build rmdev suite
-          - name: main-suite-setup-build-rmcache-suite
-            ref: main
-            sequence: suite setup build rmcache suite
-          - name: main-suite-setup-rmenv-suite
-            ref: main
-            sequence: suite setup rmenv suite
-          - name: wip-suite-setup-build-suite
-            ref: wip/windows-probe
-            sequence: suite setup build suite
-    runs-on: ubuntu-latest
+          - order: suite-setup-build-suite
+            try: 1
+            os: macos-latest
+          - order: suite-setup-build-suite
+            try: 2
+            os: macos-latest
+          - order: suite-setup-build-rmdev-suite
+            try: 1
+            os: macos-latest
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ matrix.ref }}
+          ref: main
       - name: The commit under test
         run: git log -1 --format='%H %s'
       - uses: actions/setup-node@v4
@@ -63,54 +54,72 @@ jobs:
       - name: The steps, in this job's order
         shell: bash
         env:
-          SEQUENCE: ${{ matrix.sequence }}
+          ORDER: ${{ matrix.order }}
         run: |
           set +e
           n=0
-          for step in $SEQUENCE; do
+          for step in ${ORDER//-/ }; do
             n=$((n+1))
             echo "=== step $n: $step ($(date -u +%H:%M:%S) UTC)"
             case "$step" in
               suite)
                 npx playwright test > "session-$n.log" 2>&1
                 code=$?
-                echo "RESULT step $n suite: exit $code; $(grep -E '^\s+[0-9]+ (passed|failed|flaky|did not run)' "session-$n.log" | tr -s ' ' | tr '\n' ';')"
+                echo "RESULT step $n suite: exit $code; $(grep -E '^ +[0-9]+ (passed|failed|flaky|did not run)' "session-$n.log" | tr -s ' ' | tr '\n' ';')"
                 echo "RESULT step $n suite: lines saying 'Failed to find Server Action': $(grep -c 'Failed to find Server Action' "session-$n.log")"
                 echo "RESULT step $n suite: lines saying 'discovery failed 404': $(grep -c 'discovery failed 404' "session-$n.log")"
                 if [ "$code" != "0" ]; then
                   echo "--- the tests that failed"
-                  grep -E '^\s+[0-9]+\) ' "session-$n.log" | cut -c1-170
+                  grep -E '^ +[0-9]+\) ' "session-$n.log" | cut -c1-170
                   echo "--- what each one expected and received"
-                  grep -E 'Expected:|Received:|^\s+> +[0-9]+ \||SyntaxError|Test timeout' "session-$n.log" | cut -c1-200 | head -60
+                  grep -E 'Expected:|Received:|^ +> +[0-9]+ \||SyntaxError|Test timeout' "session-$n.log" | cut -c1-200 | head -40
                 fi
+                echo "--- the dev server's lines about its saved state"
+                grep -i -E 'turbopack|persist|filesystem cache|invalidat' "session-$n.log" | cut -c1-200 | sort | uniq -c | head -8
+                echo "--- compiled files the dev server holds for four addresses after this session"
+                for k in "chat/stream" "canvas/upload" "/media/" "canvas/state"; do
+                  echo "$k: $(find .next/dev/server -path "*projects*" -path "*$k*" -type f 2>/dev/null | wc -l | tr -d ' ') files"
+                done
                 ;;
               setup)
                 npm run setup
-                echo "keys in .env.local: $(grep -cE '^[A-Za-z_][A-Za-z0-9_]*=' .env.local)"
                 ;;
               build)
                 npm run build > "build-$n.log" 2>&1
                 code=$?
                 echo "RESULT step $n build: exit $code"
-                grep -m 12 -E 'error TS|Compiled|Failed' "build-$n.log"
+                if [ "$code" != "0" ]; then tail -n 30 "build-$n.log" | cut -c1-220; fi
                 ;;
               rmdev)
                 rm -rf .next/dev
                 echo "removed .next/dev"
-                ;;
-              rmcache)
-                rm -rf .next/dev/cache
-                echo "removed .next/dev/cache"
                 ;;
               rmenv)
                 rm -f .env.local
                 echo "removed .env.local"
                 ;;
             esac
-            echo "--- .next now"
-            ls .next 2>/dev/null | tr '\n' ' '; echo
-            echo "--- .next/dev now"
-            du -sh .next/dev/* 2>/dev/null | tr '\t' ' ' | tr '\n' ';'; echo
-            echo "--- files at the top of the folder that git sees as new or changed"
-            git status --porcelain | cut -c1-120 | head -12
+            echo "--- size of the dev server's saved state: $(du -sh .next/dev/cache 2>/dev/null | cut -f1)"
           done
+
+  main-build-without-setup:
+    # In round 9 "npm run build" ended with 1 on the unchanged main branch in the one order that
+    # had not run "npm run setup" first. This prints what it says.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: npm run build on a fresh checkout, no setup
+        shell: bash
+        run: |
+          set +e
+          npm run build > build.log 2>&1
+          echo "RESULT build without setup: exit $?"
+          tail -n 40 build.log | cut -c1-220

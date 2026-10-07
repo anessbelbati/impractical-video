@@ -1,0 +1,161 @@
+name: Branch agents
+# Work in progress on this fork only. The real Codex and Claude Code against each branch as it
+# would be proposed: the branch is checked out, and only the probe scripts are added on top.
+on:
+  workflow_dispatch:
+  push:
+    branches: ["wip/**"]
+permissions:
+  contents: read
+env:
+  NEXT_TELEMETRY_DISABLED: "1"
+jobs:
+  agents:
+    name: ${{ matrix.branch }}-${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - branch: codex-hooks-file
+            os: ubuntu-latest
+          - branch: codex-hooks-file
+            os: macos-latest
+          - branch: codex-linux-display
+            os: ubuntu-latest
+          - branch: windows-support
+            os: windows-latest
+          - branch: windows-support
+            os: ubuntu-latest
+          - branch: windows-support
+            os: macos-latest
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.branch }}
+      - name: The commit under test, with only the probe scripts added
+        shell: bash
+        run: |
+          git log -1 --format='%H %s'
+          git fetch --depth=1 origin wip/windows-probe
+          git checkout FETCH_HEAD -- .github/probe
+          echo "files added under .github/probe: $(git status --short | grep -c ' .github/probe/')"
+          echo "files changed anywhere else: $(git status --short | grep -vc ' .github/probe/')"
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Electron binary
+        run: node node_modules/electron/install.js
+      - name: Linux only - Electron sandbox
+        if: ${{ runner.os == 'Linux' }}
+        run: |
+          sudo chown root:root node_modules/electron/dist/chrome-sandbox
+          sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
+      - name: Both agents (Windows, installed the way the app installs them)
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        timeout-minutes: 12
+        shell: powershell
+        run: |
+          npm install -g @openai/codex
+          try { irm https://claude.ai/install.ps1 | iex } catch { "the installer failed: $_" }
+          if (-not (Test-Path (Join-Path $HOME ".local\bin\claude.exe"))) { npm install -g @anthropic-ai/claude-code }
+      - name: Both agents
+        if: ${{ !cancelled() && runner.os != 'Windows' }}
+        timeout-minutes: 12
+        run: npm install -g @openai/codex @anthropic-ai/claude-code
+      - name: Linux, display branch - the app's tool server with only the variables Codex hands an MCP server
+        if: ${{ !cancelled() && runner.os == 'Linux' && matrix.branch == 'codex-linux-display' }}
+        timeout-minutes: 6
+        run: xvfb-run --auto-servernum node .github/probe/tool-server-env.mjs
+      - name: The real Codex takes a prompt in a project the app prepared (Linux)
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
+        timeout-minutes: 12
+        run: xvfb-run --auto-servernum node .github/probe/codex-runs-hooks.mjs
+      - name: The real Codex takes a prompt in a project the app prepared
+        if: ${{ !cancelled() && runner.os != 'Linux' }}
+        timeout-minutes: 12
+        run: node .github/probe/codex-runs-hooks.mjs
+      - name: The real Claude Code takes a prompt in a project the app prepared (Linux)
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
+        timeout-minutes: 15
+        run: xvfb-run --auto-servernum node .github/probe/claude-runs-hooks.mjs
+      - name: The real Claude Code takes a prompt in a project the app prepared
+        if: ${{ !cancelled() && runner.os != 'Linux' }}
+        timeout-minutes: 15
+        run: node .github/probe/claude-runs-hooks.mjs
+      - name: Windows - the real Codex once more with PowerShell 7 hidden, so that it falls back to Windows PowerShell
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        continue-on-error: true
+        timeout-minutes: 15
+        shell: powershell
+        run: |
+          Rename-Item "C:\Program Files\PowerShell\7" "7-hidden" -ErrorAction Stop
+          try {
+            $env:Path = ($env:Path -split ";" | Where-Object { $_ -and ($_ -notmatch '\\PowerShell\\7') }) -join ";"
+            "pwsh on the search path now: $((Get-Command pwsh -ErrorAction SilentlyContinue).Source)"
+            node .github/probe/codex-runs-hooks.mjs
+          } finally {
+            Rename-Item "C:\Program Files\PowerShell\7-hidden" "7"
+          }
+      - name: Windows - a Claude Code release from before hooks could list their arguments
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        continue-on-error: true
+        timeout-minutes: 12
+        shell: pwsh
+        run: |
+          $versions = npm view @anthropic-ai/claude-code versions --json | ConvertFrom-Json
+          $old = $versions | Where-Object { $_ -match '^2\.1\.(\d+)$' -and [int]$Matches[1] -lt 139 } | Select-Object -Last 1
+          "newest release below 2.1.139: $old"
+          $prefix = Join-Path $env:RUNNER_TEMP "claude-old"
+          npm install --prefix $prefix "@anthropic-ai/claude-code@$old" 2>&1 | Select-Object -Last 3
+          $env:PROBE_CLAUDE = Join-Path $prefix "node_modules\.bin\claude.cmd"
+          $env:PROBE_FIRST_CASE_ONLY = "1"
+          node .github/probe/claude-runs-hooks.mjs
+
+  windows-support-without-git-bash:
+    # Claude Code starts a hook through Git Bash when it finds one. This hides Git for one step.
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: windows-support
+      - name: The commit under test, with only the probe scripts added
+        shell: bash
+        run: |
+          git log -1 --format='%H %s'
+          git fetch --depth=1 origin wip/windows-probe
+          git checkout FETCH_HEAD -- .github/probe
+          echo "files added under .github/probe: $(git status --short | grep -c ' .github/probe/')"
+          echo "files changed anywhere else: $(git status --short | grep -vc ' .github/probe/')"
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Electron binary
+        run: node node_modules/electron/install.js
+      - name: Claude Code from its own installer
+        timeout-minutes: 10
+        shell: powershell
+        run: |
+          try { irm https://claude.ai/install.ps1 | iex } catch { "the installer failed: $_" }
+          if (-not (Test-Path (Join-Path $HOME ".local\bin\claude.exe"))) { npm install -g @anthropic-ai/claude-code }
+      - name: The real Claude Code takes a prompt with Git hidden
+        if: ${{ !cancelled() }}
+        timeout-minutes: 20
+        shell: pwsh
+        run: |
+          Rename-Item "C:\Program Files\Git" "Git-hidden" -ErrorAction Stop
+          try {
+            $env:Path = ($env:Path -split ";" | Where-Object { $_ -and ($_ -notmatch '\\Git(\\|$)') }) -join ";"
+            Remove-Item Env:CLAUDE_CODE_GIT_BASH_PATH -ErrorAction SilentlyContinue
+            "git on the search path now: $((Get-Command git -ErrorAction SilentlyContinue).Source)"
+            "bash on the search path now: $((Get-Command bash -ErrorAction SilentlyContinue).Source)"
+            node .github/probe/claude-runs-hooks.mjs
+          } finally {
+            Rename-Item "C:\Program Files\Git-hidden" "Git"
+          }
