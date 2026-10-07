@@ -10,7 +10,7 @@ permissions:
 jobs:
   windows-checks:
     runs-on: windows-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     env:
       NEXT_TELEMETRY_DISABLED: "1"
     steps:
@@ -136,6 +136,42 @@ jobs:
         if: ${{ !cancelled() }}
         timeout-minutes: 10
         run: node .github/probe/codex-hooks.mjs
+      - name: What stops a folder from being moved on this system
+        if: ${{ !cancelled() }}
+        timeout-minutes: 5
+        run: node .github/probe/folder-move.mjs
+      - name: What a program started through PowerShell receives, byte for byte
+        if: ${{ !cancelled() }}
+        timeout-minutes: 5
+        run: node .github/probe/powershell-pipes.mjs
+      - name: The real Codex takes a prompt in a project the app prepared
+        if: ${{ !cancelled() }}
+        timeout-minutes: 15
+        shell: pwsh
+        run: |
+          if (-not (Test-Path (Join-Path (npm root -g) "@openai\codex\bin\codex.js"))) { npm install -g @openai/codex }
+          node .github/probe/codex-runs-hooks.mjs
+      - name: The real Claude Code takes a prompt in a project the app prepared
+        if: ${{ !cancelled() }}
+        timeout-minutes: 15
+        shell: pwsh
+        run: |
+          if (-not (Test-Path (Join-Path $HOME ".local\bin\claude.exe")) -and -not (Get-Command claude -ErrorAction SilentlyContinue)) { npm install -g @anthropic-ai/claude-code }
+          node .github/probe/claude-runs-hooks.mjs
+      - name: The real Codex once more with PowerShell 7 hidden, so that it falls back to Windows PowerShell
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        timeout-minutes: 15
+        shell: powershell
+        run: |
+          Rename-Item "C:\Program Files\PowerShell\7" "7-hidden" -ErrorAction Stop
+          try {
+            $env:Path = ($env:Path -split ";" | Where-Object { $_ -and ($_ -notmatch '\\PowerShell\\7') }) -join ";"
+            "pwsh on the search path now: $((Get-Command pwsh -ErrorAction SilentlyContinue).Source)"
+            node .github/probe/codex-runs-hooks.mjs
+          } finally {
+            Rename-Item "C:\Program Files\PowerShell\7-hidden" "7"
+          }
       - name: npm run doctor, with both CLIs now installed and FFmpeg still missing
         if: ${{ !cancelled() }}
         run: npm run doctor
@@ -162,6 +198,95 @@ jobs:
       - name: npm run release:scan
         if: ${{ !cancelled() }}
         run: npm run release:scan
+      - name: The new delete test against the code from before the fix
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          git fetch --depth=1 origin f97dc4561ce7f13cee9338ef5c7336f0bdebf751
+          git show f97dc4561ce7f13cee9338ef5c7336f0bdebf751:lib/workspace.ts > lib/workspace.ts
+          npx vitest run tests/project-delete.test.ts && echo "RESULT: the delete test PASSES against the old code" || echo "RESULT: the delete test FAILS against the old code"
+          git checkout -- lib/workspace.ts
+
+  windows-without-git-bash:
+    # Claude Code starts a hook through Git Bash when it finds one. This job hides Git for one
+    # step to see what a machine without it does. Kept apart so that nothing else depends on it.
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Electron binary
+        run: node node_modules/electron/install.js
+      - name: Claude Code from its own installer
+        timeout-minutes: 10
+        shell: powershell
+        run: |
+          try { irm https://claude.ai/install.ps1 | iex } catch { "the installer failed: $_" }
+          if (-not (Test-Path (Join-Path $HOME ".local\bin\claude.exe"))) { npm install -g @anthropic-ai/claude-code }
+      - name: The real Claude Code takes a prompt with Git hidden
+        if: ${{ !cancelled() }}
+        timeout-minutes: 20
+        shell: pwsh
+        run: |
+          Rename-Item "C:\Program Files\Git" "Git-hidden" -ErrorAction Stop
+          try {
+            $env:Path = ($env:Path -split ";" | Where-Object { $_ -and ($_ -notmatch '\\Git(\\|$)') }) -join ";"
+            Remove-Item Env:CLAUDE_CODE_GIT_BASH_PATH -ErrorAction SilentlyContinue
+            "git on the search path now: $((Get-Command git -ErrorAction SilentlyContinue).Source)"
+            "bash on the search path now: $((Get-Command bash -ErrorAction SilentlyContinue).Source)"
+            node .github/probe/claude-runs-hooks.mjs
+          } finally {
+            Rename-Item "C:\Program Files\Git-hidden" "Git"
+          }
+
+  macos-checks:
+    # The system the project is developed on: its own checks, and the same probes of both agents.
+    runs-on: macos-latest
+    timeout-minutes: 60
+    env:
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Electron binary
+        run: node node_modules/electron/install.js
+      - name: npm run check
+        if: ${{ !cancelled() }}
+        timeout-minutes: 25
+        run: npm run check
+      - name: The context hook, started the way Claude Code and Codex start it
+        if: ${{ !cancelled() }}
+        timeout-minutes: 6
+        run: node .github/probe/hook-probe.mjs
+      - name: The real Codex takes a prompt in a project the app prepared
+        if: ${{ !cancelled() }}
+        timeout-minutes: 15
+        run: |
+          npm install -g @openai/codex
+          node .github/probe/codex-hooks.mjs
+          node .github/probe/codex-runs-hooks.mjs
+      - name: The real Claude Code takes a prompt in a project the app prepared
+        if: ${{ !cancelled() }}
+        timeout-minutes: 15
+        run: |
+          npm install -g @anthropic-ai/claude-code
+          node .github/probe/claude-runs-hooks.mjs
+      - name: What stops a folder from being moved on this system
+        if: ${{ !cancelled() }}
+        timeout-minutes: 5
+        run: node .github/probe/folder-move.mjs
 
   windows-app:
     runs-on: windows-latest
@@ -233,6 +358,20 @@ jobs:
         if: ${{ !cancelled() }}
         timeout-minutes: 6
         run: xvfb-run --auto-servernum node .github/probe/hook-probe.mjs
+      - name: The real Codex takes a prompt in a project the app prepared
+        if: ${{ !cancelled() }}
+        timeout-minutes: 15
+        run: xvfb-run --auto-servernum node .github/probe/codex-runs-hooks.mjs
+      - name: The real Claude Code takes a prompt in a project the app prepared
+        if: ${{ !cancelled() }}
+        timeout-minutes: 15
+        run: |
+          npm install -g @anthropic-ai/claude-code
+          xvfb-run --auto-servernum node .github/probe/claude-runs-hooks.mjs
+      - name: What stops a folder from being moved on this system
+        if: ${{ !cancelled() }}
+        timeout-minutes: 5
+        run: node .github/probe/folder-move.mjs
       - name: npm run check
         if: ${{ !cancelled() }}
         run: xvfb-run --auto-servernum npm run check
