@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
+import path from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
@@ -84,8 +85,18 @@ describe.runIf(process.env.PROBE_REAL_AGENT_CLIS === "1")("real agent CLIs on th
   it("starts the launchers other package managers write", async () => {
     for (const file of (process.env.PROBE_LAUNCHERS ?? "").split(";").filter(Boolean)) {
       const text = await readFile(file, "utf8");
-      console.log(`[probe] launcher ${file}\n${text}`);
+      console.log(`[probe] launcher ${file}\n${JSON.stringify(text)}`);
       console.log("[probe] parsed", commandShimTarget(text));
+      // A launcher may forward to another launcher: print each one on the way.
+      let current = file;
+      for (let hop = 0; hop < 4; hop += 1) {
+        const parsed = commandShimTarget(await readFile(current, "utf8").catch(() => ""));
+        if (!parsed || !/\.(?:cmd|bat)$/i.test(parsed.target)) break;
+        current = path.join(path.dirname(current), ...parsed.target.split(/[\\/]+/));
+        const next = await readFile(current, "utf8").catch((error: Error) => `unreadable: ${error.message}`);
+        console.log(`[probe] forwards to ${current}\n${JSON.stringify(next)}`);
+        console.log("[probe] parsed", commandShimTarget(next));
+      }
       console.log("[probe] --version", await runThroughLaunch(file, ["--version"]));
       console.log("[probe] with a prompt-like argument", await runThroughLaunch(file, ["--version", 'two words & "quotes"\nnext line']));
     }

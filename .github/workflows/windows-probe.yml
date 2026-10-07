@@ -30,6 +30,10 @@ jobs:
           git status --short | head -20
       - name: Electron binary
         run: node node_modules/electron/install.js
+      - name: The context hook, started the way Claude Code and Codex start it
+        if: ${{ !cancelled() }}
+        timeout-minutes: 6
+        run: node .github/probe/hook-probe.mjs
       - name: npm run lint
         if: ${{ !cancelled() }}
         run: npm run lint
@@ -87,27 +91,38 @@ jobs:
         timeout-minutes: 12
         shell: pwsh
         run: |
+          # Both go to folders that are not on the search path, so the app's own installers still run in the next step.
           $found = @()
           try {
             npm install -g pnpm 2>&1 | Select-Object -Last 2
             $env:PNPM_HOME = Join-Path $env:RUNNER_TEMP "pnpm-home"
-            New-Item -ItemType Directory -Force $env:PNPM_HOME | Out-Null
-            $env:Path = "$env:PNPM_HOME;$env:Path"
+            New-Item -ItemType Directory -Force (Join-Path $env:PNPM_HOME "bin") | Out-Null
+            $env:Path = "$env:PNPM_HOME;$(Join-Path $env:PNPM_HOME 'bin');$env:Path"
             pnpm --version
             pnpm add -g @openai/codex @anthropic-ai/claude-code 2>&1 | Select-Object -Last 12
-            $found += Get-ChildItem -Recurse -Depth 2 $env:PNPM_HOME -Filter *.cmd -ErrorAction SilentlyContinue | Where-Object { $_.Name -match "^(codex|claude)\.cmd$" } | Select-Object -ExpandProperty FullName
+            "pnpm bin: $(pnpm bin -g)"
+            $found += Get-ChildItem $env:PNPM_HOME, (Join-Path $env:PNPM_HOME "bin") -Filter *.cmd -ErrorAction SilentlyContinue | Where-Object { $_.Name -match "^(codex|claude)\.cmd$" } | Select-Object -ExpandProperty FullName
           } catch { "pnpm part failed: $_" }
           try {
-            $yarnPrefix = Join-Path $env:RUNNER_TEMP "yarn-prefix"
+            # Yarn keeps the packages under %LOCALAPPDATA%; a prefix on another drive makes it write a launcher that cannot run.
+            $yarnPrefix = Join-Path $env:LOCALAPPDATA "video-fs-probe-yarn"
             yarn --version
+            "yarn global dir: $(yarn global dir)"
             yarn global add @openai/codex @anthropic-ai/claude-code --prefix $yarnPrefix 2>&1 | Select-Object -Last 12
-            $found += Get-ChildItem -Recurse -Depth 2 $yarnPrefix -Filter *.cmd -ErrorAction SilentlyContinue | Where-Object { $_.Name -match "^(codex|claude)\.cmd$" } | Select-Object -ExpandProperty FullName
+            $found += Get-ChildItem (Join-Path $yarnPrefix "bin") -Filter *.cmd -ErrorAction SilentlyContinue | Where-Object { $_.Name -match "^(codex|claude)\.cmd$" } | Select-Object -ExpandProperty FullName
           } catch { "yarn part failed: $_" }
+          $found = $found | Select-Object -Unique
           "launchers found:"; $found
           "PROBE_LAUNCHERS=$($found -join ';')" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - name: Windows PowerShell started from PowerShell 7 through Node
+        if: ${{ !cancelled() }}
+        timeout-minutes: 5
+        shell: pwsh
+        run: node .github/probe/psmodulepath.mjs
       - name: The real installers and CLIs through the app's own code
         if: ${{ !cancelled() }}
         timeout-minutes: 25
+        shell: pwsh
         env:
           PROBE_REAL_AGENT_CLIS: "1"
         run: npx vitest run tests/real-agent-clis.probe.test.ts
@@ -117,15 +132,29 @@ jobs:
         run: |
           Get-CimInstance Win32_Process | Where-Object { $_.Name -match "codex|claude" -or $_.CommandLine -match "codex|claude" } | Select-Object ProcessId, ParentProcessId, Name, @{ n = "CommandLine"; e = { if ($_.CommandLine.Length -gt 160) { $_.CommandLine.Substring(0, 160) } else { $_.CommandLine } } } | Format-Table -AutoSize -Wrap
           "browsers:"; Get-Process msedge, chrome, firefox -ErrorAction SilentlyContinue | Group-Object ProcessName | Select-Object Count, Name
-      - name: npm run doctor, with both CLIs now installed
+      - name: npm run doctor, with both CLIs now installed and FFmpeg still missing
         if: ${{ !cancelled() }}
         run: npm run doctor
-      - name: FFmpeg package name for the install hint
+      - name: The FFmpeg install command from doctor's hint
         if: ${{ !cancelled() }}
-        timeout-minutes: 5
+        timeout-minutes: 15
         shell: pwsh
         run: |
-          try { winget --version; winget show --id Gyan.FFmpeg --exact --accept-source-agreements --disable-interactivity 2>&1 | Where-Object { $_ -match "^\S" } | Select-Object -First 25 } catch { "winget unavailable: $_" }
+          "before: ffmpeg $(if (Get-Command ffmpeg -ErrorAction SilentlyContinue) { 'found' } else { 'not found' }), ffprobe $(if (Get-Command ffprobe -ErrorAction SilentlyContinue) { 'found' } else { 'not found' })"
+          winget --version
+          winget install Gyan.FFmpeg --accept-source-agreements --accept-package-agreements --disable-interactivity 2>&1 | Where-Object { $_ -match "[A-Za-z]{3}" } | Select-Object -Last 15
+          "winget exit code: $LASTEXITCODE"
+          $links = Join-Path $env:LOCALAPPDATA "Microsoft\WinGet\Links"
+          "links folder:"; Get-ChildItem $links -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name
+          $programs = Get-ChildItem (Join-Path $env:LOCALAPPDATA "Microsoft\WinGet\Packages") -Recurse -Include ffmpeg.exe, ffprobe.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName
+          "programs unpacked:"; $programs
+          "user PATH entries added by winget:"; ([Environment]::GetEnvironmentVariable("Path", "User") -split ";") | Where-Object { $_ -match "WinGet" }
+          # A new terminal would pick the folder up from the user's PATH; this job has to be told.
+          if (Test-Path (Join-Path $links "ffmpeg.exe")) { $links | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8 }
+          elseif ($programs) { Split-Path $programs[0] | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8 }
+      - name: npm run doctor, with FFmpeg installed
+        if: ${{ !cancelled() }}
+        run: npm run doctor
       - name: npm run release:scan
         if: ${{ !cancelled() }}
         run: npm run release:scan
@@ -182,6 +211,10 @@ jobs:
           node node_modules/electron/install.js
           sudo chown root:root node_modules/electron/dist/chrome-sandbox
           sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
+      - name: The context hook, started the way Claude Code and Codex start it
+        if: ${{ !cancelled() }}
+        timeout-minutes: 6
+        run: xvfb-run --auto-servernum node .github/probe/hook-probe.mjs
       - name: npm run check
         if: ${{ !cancelled() }}
         run: xvfb-run --auto-servernum npm run check
