@@ -345,7 +345,8 @@ function hookConfig(launcher, agent) {
 /** Both agents hand a hook command to sh, except on Windows. There Codex uses
  * PowerShell, and Claude Code uses Git Bash, or PowerShell when Git is not
  * installed, so no one spelling of a command line runs under both. Claude Code
- * starts a hook that lists its arguments directly, with no shell. */
+ * 2.1.139 and later start a hook that lists its arguments directly, with no
+ * shell; an earlier release skips such a hook and sends the prompt without it. */
 function hookCommand(words, agent) {
   if (process.platform !== "win32") {
     return { command: words.map(shellQuote).join(" ") };
