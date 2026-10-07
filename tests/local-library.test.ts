@@ -26,7 +26,7 @@ describe("local Library uploads", () => {
     expect((await listLocalLibraryUploads()).map(asset => asset.kind).sort()).toEqual(["audio", "document", "image", "image", "video"]);
     const asset = await localLibraryFile(ids[0]);
     expect(await readFile(asset.absolutePath, "utf8")).toBe("image");
-    // Windows keeps no owner-only mode bits; the profile folder's access list does that job there.
+    // Windows has no owner-only mode bits to assert.
     if (process.platform !== "win32") {
       expect((await stat(asset.absolutePath)).mode & 0o777).toBe(0o600);
       expect((await stat(path.dirname(asset.absolutePath))).mode & 0o777).toBe(0o700);
