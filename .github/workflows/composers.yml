@@ -4,10 +4,9 @@ name: Home composers
 # composer text boxes at the moment the test looked. None of the saved runs on next 16.3.6 shows
 # that. This asks how often it happens on each version: a probe counts the text boxes for 2.5
 # seconds after the same steps, and the project's own test is repeated.
+# Ran once as run 37580166634. Started by hand only since then.
 on:
   workflow_dispatch:
-  push:
-    branches: ["wip/**"]
 permissions:
   contents: read
 env:
