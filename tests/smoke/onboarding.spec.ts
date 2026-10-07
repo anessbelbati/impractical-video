@@ -42,10 +42,15 @@ test("onboarding saves a fal key, handles invalid input and never stores it in t
     expect(await page.evaluate(() => JSON.stringify(localStorage))).not.toContain("onboarding-test-only");
     expect((await (await request.get("/api/settings/providers")).json()).configured).toBe(true);
     expect((await (await request.get("/api/settings/generation")).json()).mode).toBe("fal");
+    // Closing clears ?setup=1 with a navigation. Hold it, so the guide is asked for again before it lands.
+    let release = () => {};
+    const held = new Promise<void>(resolve => { release = resolve; });
+    await page.route(url => url.pathname === "/" && !url.searchParams.has("setup"), async route => { await held; await route.fallback(); });
     await page.getByRole("button", { name: "Explore first" }).click();
     await page.getByRole("button", { name: "Account", exact: true }).filter({ visible: true }).click();
     await page.getByRole("menuitem", { name: "Setup guide" }).click();
     await expect(page.getByRole("button", { name: "Let’s get started" })).toBeVisible();
+    release();
   } finally { await request.delete("/api/settings/providers"); }
 });
 

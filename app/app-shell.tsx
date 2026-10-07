@@ -556,7 +556,12 @@ export function SidebarAuthBadge({
                 </>
               ) : null}
 
-              <MenuItem onSelect={() => router.push("/?setup=1")}>
+              <MenuItem
+                onSelect={() => {
+                  window.dispatchEvent(new Event("impractical:setup-guide"));
+                  router.push("/?setup=1");
+                }}
+              >
                 <Settings size={16} />
                 Setup guide
               </MenuItem>

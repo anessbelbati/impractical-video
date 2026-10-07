@@ -106,6 +106,14 @@ export function WelcomeModal({ onCreateProject }: { onCreateProject: () => Promi
   }, [replay]);
 
   useEffect(() => {
+    // Closing clears ?setup=1 with a navigation. A request for the guide made before that
+    // navigation lands replaces it, so `replay` never changes and the effect above never runs.
+    const reopen = () => { setStep(0); setClosed(false); };
+    window.addEventListener("impractical:setup-guide", reopen);
+    return () => window.removeEventListener("impractical:setup-guide", reopen);
+  }, []);
+
+  useEffect(() => {
     if (!open || step !== 2 || !isLocal) return;
     let active = true;
     void fetch("/api/settings/providers", { cache: "no-store" }).then(response => response.json()).then(result => {
