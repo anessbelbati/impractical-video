@@ -1,0 +1,74 @@
+name: Home composers
+# Work in progress on this fork only. On next 16.4.0 one run of the browser suite (macOS, the third
+# run in its folder, run 37578352100) failed onboarding.spec.ts:12 because the home page held two
+# composer text boxes at the moment the test looked. None of the saved runs on next 16.3.6 shows
+# that. This asks how often it happens on each version: a probe counts the text boxes for 2.5
+# seconds after the same steps, and the project's own test is repeated.
+on:
+  workflow_dispatch:
+  push:
+    branches: ["wip/**"]
+permissions:
+  contents: read
+env:
+  NEXT_TELEMETRY_DISABLED: "1"
+jobs:
+  composers:
+    name: composers-${{ matrix.code }}-${{ matrix.os == 'macos-latest' && 'mac' || 'linux' }}-${{ matrix.try }}
+    strategy:
+      fail-fast: false
+      matrix:
+        code: [main, next-16-4]
+        os: [ubuntu-latest, macos-latest]
+        try: [1, 2]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.code }}
+      - name: The commit under test, with only the probe files added
+        shell: bash
+        run: |
+          git log -1 --format='%H %s'
+          git fetch --quiet --depth=1 origin wip/windows-probe
+          git checkout FETCH_HEAD -- .github/probe/browser/playwright.config.ts .github/probe/browser/home-composers.spec.ts
+          echo "probe files added: $(git status --short | grep -c '.github/probe/browser/')"
+          echo "files changed anywhere else: $(git status --short | grep -vc '.github/probe/browser/')"
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Installed version of next
+        shell: bash
+        run: node -p "'next ' + JSON.parse(require('fs').readFileSync('node_modules/next/package.json', 'utf8')).version"
+      - run: npx playwright install --with-deps chromium
+      - name: The probe and the project's own test, 25 times each, twice
+        shell: bash
+        run: |
+          set +e
+          for pass in 1 2; do
+            echo "=== pass $pass: the probe ($(date -u +%H:%M:%S) UTC)"
+            npx playwright test -c .github/probe/browser/playwright.config.ts home-composers --repeat-each=25 > "probe-$pass.log" 2>&1
+            code=$?
+            echo "RESULT pass $pass probe: exit $code; $(grep -E '^ +[0-9]+ (passed|failed|flaky|did not run)' "probe-$pass.log" | tr -s ' ' | tr '\n' ';')"
+            echo "RESULT pass $pass probe: runs that printed a count: $(grep -c 'COMPOSERS most at once' "probe-$pass.log"); runs with two or more at once: $(grep -c -E 'COMPOSERS most at once: ([2-9]|[1-9][0-9])' "probe-$pass.log"); runs whose last sample was not one: $(grep 'COMPOSERS most at once' "probe-$pass.log" | grep -vc 'last sample: 1$')"
+            echo "--- most at once, how many runs each"
+            grep -o -E 'COMPOSERS most at once: -?[0-9]+' "probe-$pass.log" | sort | uniq -c
+            echo "--- where two boxes sat (first four runs that had two)"
+            grep 'COMPOSERS two boxes' "probe-$pass.log" | cut -c1-1100 | head -4
+            if [ "$code" != "0" ]; then
+              echo "--- the probe's own failures"
+              grep -E '^ +[0-9]+\) |Expected:|Received:|^ +> +[0-9]+ \||Test timeout' "probe-$pass.log" | cut -c1-200 | head -12
+            fi
+            echo "=== pass $pass: the project's own test ($(date -u +%H:%M:%S) UTC)"
+            npx playwright test tests/smoke/onboarding.spec.ts:12 --repeat-each=25 > "own-$pass.log" 2>&1
+            code=$?
+            echo "RESULT pass $pass own test: exit $code; $(grep -E '^ +[0-9]+ (passed|failed|flaky|did not run)' "own-$pass.log" | tr -s ' ' | tr '\n' ';')"
+            echo "RESULT pass $pass own test: lines saying 'strict mode violation': $(grep -c 'strict mode violation' "own-$pass.log")"
+            if [ "$code" != "0" ]; then
+              echo "--- what failed, how many times each"
+              grep -E 'Expected:|Received:|^ +> +[0-9]+ \||strict mode violation|Test timeout' "own-$pass.log" | cut -c1-200 | sort | uniq -c | sort -rn | head -8
+            fi
+          done

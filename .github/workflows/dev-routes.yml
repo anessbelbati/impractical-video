@@ -11,10 +11,9 @@ name: Dev server routes
 # in the same folder and asks each time whether the dev server knows its routes.
 # "checks" runs the project's own CI steps on each branch that could be proposed, and on all five
 # proposed branches merged together (try-all-five).
+# Started by hand now that it has answered (run 37578352100).
 on:
   workflow_dispatch:
-  push:
-    branches: ["wip/**"]
 permissions:
   contents: read
 env:
