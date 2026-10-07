@@ -7,10 +7,9 @@ name: Second session
 # stops the test server with SIGTERM instead (branch smoke-clean-stop).
 # Round 12 repeats the first two on Linux. On macOS, where two runs without the saved state were
 # slow in round 11, it runs the suite with and without it on the same machine, in both orders.
+# Started by hand now that it has answered (runs 37573676188 and 37574915909).
 on:
   workflow_dispatch:
-  push:
-    branches: ["wip/**"]
 permissions:
   contents: read
 env:

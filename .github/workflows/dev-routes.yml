@@ -1,0 +1,238 @@
+name: Dev server routes
+# Work in progress on this fork only. On the project's unchanged main branch a second run of the
+# browser suite in one folder sometimes loses the addresses below /api/projects/<id>/ (they answer
+# with the not-found page) and three tests fail: 14 of 32 second runs on Linux in rounds 9 to 12.
+# Next's own tracker describes a start-up race with the same picture (vercel/next.js#96139, fixed
+# by #97920 in 16.4.0, which is not in 16.3.x). This round asks three things on the same machines:
+#   main        the project as it is (next 16.3.6, dev cache on)
+#   cache-off   branch smoke-repeat-run: the smoke server starts the dev server without its cache
+#   next-16-4   branch next-16-4: the lock file moved to next 16.4.0, nothing else
+# "boots" runs the suite, setup, build, the suite again, then starts the smoke server many times
+# in the same folder and asks each time whether the dev server knows its routes.
+# "checks" runs the project's own CI steps on each branch that could be proposed, and on all five
+# proposed branches merged together (try-all-five).
+on:
+  workflow_dispatch:
+  push:
+    branches: ["wip/**"]
+permissions:
+  contents: read
+env:
+  NEXT_TELEMETRY_DISABLED: "1"
+jobs:
+  boots:
+    name: boots-${{ matrix.code }}-${{ matrix.os == 'macos-latest' && 'mac' || 'linux' }}-${{ matrix.try }}
+    strategy:
+      fail-fast: false
+      matrix:
+        code: [main, cache-off, next-16-4]
+        os: [ubuntu-latest]
+        try: [1, 2, 3, 4]
+        include:
+          - code: main
+            os: macos-latest
+            try: 1
+          - code: main
+            os: macos-latest
+            try: 2
+          - code: cache-off
+            os: macos-latest
+            try: 1
+          - code: next-16-4
+            os: macos-latest
+            try: 1
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 80
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.code == 'main' && 'main' || matrix.code == 'cache-off' && 'smoke-repeat-run' || 'next-16-4' }}
+          fetch-depth: 2
+      - name: The commit under test, with only the probe script added
+        shell: bash
+        run: |
+          git log -1 --format='%H %s'
+          echo "--- files this commit changes"
+          git show --stat --format= HEAD | cut -c1-120
+          git fetch --quiet --depth=1 origin wip/windows-probe
+          git checkout FETCH_HEAD -- .github/probe/boot-routes.mjs
+          echo "probe files added: $(git status --short | grep -c 'boot-routes.mjs')"
+          echo "files changed anywhere else: $(git status --short | grep -vc 'boot-routes.mjs')"
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Installed version of next
+        shell: bash
+        run: node -p "'next ' + JSON.parse(require('fs').readFileSync('node_modules/next/package.json', 'utf8')).version"
+      - run: npx playwright install --with-deps chromium
+      - name: Suite, setup, build, suite
+        shell: bash
+        run: |
+          set +e
+          listed() { if grep -q -F "\"$1\"" .next/dev/types/routes.d.ts 2>/dev/null; then echo yes; else echo no; fi; }
+          n=0
+          for step in suite setup build suite; do
+            n=$((n+1))
+            echo "=== step $n: $step ($(date -u +%H:%M:%S) UTC)"
+            case "$step" in
+              suite)
+                t0=$(date +%s)
+                npx playwright test > "session-$n.log" 2>&1
+                code=$?
+                t1=$(date +%s)
+                echo "RESULT step $n suite: exit $code; $(grep -E '^ +[0-9]+ (passed|failed|flaky|did not run)' "session-$n.log" | tr -s ' ' | tr '\n' ';')"
+                echo "RESULT step $n suite: the whole command took $((t1-t0)) s"
+                echo "RESULT step $n suite: lines saying 'Failed to find Server Action': $(grep -c 'Failed to find Server Action' "session-$n.log")"
+                echo "RESULT step $n suite: lines saying 'discovery failed 404': $(grep -c 'discovery failed 404' "session-$n.log")"
+                echo "RESULT step $n suite: the route list the dev server left: $(wc -l < .next/dev/types/routes.d.ts 2>/dev/null | tr -d ' ') lines; lists chat/stream: $(listed '/api/projects/[id]/chat/stream'); canvas/upload: $(listed '/api/projects/[id]/canvas/upload'); media: $(listed '/api/projects/[id]/media/[...path]'); tracks: $(listed '/api/projects/[id]/tracks'); the project itself: $(listed '/api/projects/[id]')"
+                if [ "$code" != "0" ]; then
+                  echo "--- the tests that failed"
+                  grep -E '^ +[0-9]+\) ' "session-$n.log" | cut -c1-170
+                  echo "--- what each one expected and received"
+                  grep -E 'Expected:|Received:|^ +> +[0-9]+ \||SyntaxError|Test timeout' "session-$n.log" | cut -c1-200 | head -40
+                fi
+                ;;
+              setup)
+                npm run setup
+                ;;
+              build)
+                npm run build > "build-$n.log" 2>&1
+                code=$?
+                echo "RESULT step $n build: exit $code"
+                if [ "$code" != "0" ]; then
+                  echo "--- the build's error lines"
+                  grep -n -E 'error TS[0-9]+|Type error|Failed to compile|Build error|^Error' "build-$n.log" | cut -c1-200 | head -12
+                fi
+                ;;
+            esac
+            echo "--- size of the dev server's saved state: $(du -sh .next/dev/cache 2>/dev/null | cut -f1)"
+          done
+      - name: Starts of the smoke server in the same folder
+        shell: bash
+        env:
+          BOOTS: ${{ matrix.os == 'macos-latest' && '12' || '20' }}
+        run: node .github/probe/boot-routes.mjs
+      - name: Files the tools changed
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          git status --short | grep -v 'boot-routes.mjs' | cut -c1-120 || true
+          echo "--- end of list"
+
+  checks:
+    # Each branch as it would be proposed, cut from the project's main branch, through the
+    # project's own CI steps (the audit step only reports here), then the browser suite twice
+    # more in the same folder.
+    name: checks-${{ matrix.branch }}-${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - branch: next-16-4
+            os: ubuntu-latest
+          - branch: next-16-4
+            os: macos-latest
+          - branch: smoke-repeat-run
+            os: ubuntu-latest
+          - branch: try-all-five
+            os: ubuntu-latest
+          - branch: try-all-five
+            os: macos-latest
+          - branch: try-all-five
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.branch }}
+          fetch-depth: 2
+      - name: The commit under test
+        shell: bash
+        run: |
+          git log -1 --format='%H %s'
+          echo "--- files this commit changes"
+          git show --stat --format= HEAD | cut -c1-120
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Installed version of next
+        shell: bash
+        run: node -p "'next ' + JSON.parse(require('fs').readFileSync('node_modules/next/package.json', 'utf8')).version"
+      - name: Electron binary
+        run: node node_modules/electron/install.js
+      - name: Browser for the suite
+        if: ${{ runner.os != 'Windows' }}
+        run: npx playwright install --with-deps chromium
+      - name: Linux only - Electron sandbox
+        if: ${{ runner.os == 'Linux' }}
+        run: |
+          sudo chown root:root node_modules/electron/dist/chrome-sandbox
+          sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
+      - name: npm run check (Linux)
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
+        run: xvfb-run --auto-servernum npm run check
+      - name: npm run check
+        if: ${{ !cancelled() && runner.os != 'Linux' }}
+        run: npm run check
+      - name: npm audit, reported only
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
+        shell: bash
+        run: |
+          npm audit --json > audit.json || true
+          node -e "const a=require('./audit.json');console.log('advisories by severity: '+JSON.stringify(a.metadata.vulnerabilities));console.log('next is among the packages named: '+Object.keys(a.vulnerabilities||{}).includes('next'))"
+      - name: npm run release:scan
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
+        run: npm run release:scan
+      - name: Verify agent guide link
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
+        run: test "$(readlink CLAUDE.md)" = AGENTS.md
+      - name: npm run test:smoke
+        if: ${{ !cancelled() && runner.os != 'Windows' }}
+        run: npm run test:smoke
+      - name: npm run setup
+        if: ${{ !cancelled() }}
+        run: npm run setup
+      - name: npm run build
+        if: ${{ !cancelled() }}
+        run: npm run build
+      - name: npm run release:source
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
+        run: npm run release:source
+      - name: Verify exported agent guides
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
+        run: test ! -L dist/source/video-fs/CLAUDE.md && cmp AGENTS.md dist/source/video-fs/CLAUDE.md
+      - name: The browser suite a second and a third time in the same folder
+        if: ${{ !cancelled() && runner.os != 'Windows' }}
+        shell: bash
+        run: |
+          set +e
+          listed() { if grep -q -F "\"$1\"" .next/dev/types/routes.d.ts 2>/dev/null; then echo yes; else echo no; fi; }
+          for n in 2 3; do
+            echo "=== run $n ($(date -u +%H:%M:%S) UTC)"
+            t0=$(date +%s)
+            npx playwright test > "session-$n.log" 2>&1
+            code=$?
+            t1=$(date +%s)
+            echo "RESULT run $n: exit $code; $(grep -E '^ +[0-9]+ (passed|failed|flaky|did not run)' "session-$n.log" | tr -s ' ' | tr '\n' ';')"
+            echo "RESULT run $n: the whole command took $((t1-t0)) s"
+            echo "RESULT run $n: lines saying 'Failed to find Server Action': $(grep -c 'Failed to find Server Action' "session-$n.log")"
+            echo "RESULT run $n: the route list the dev server left: $(wc -l < .next/dev/types/routes.d.ts 2>/dev/null | tr -d ' ') lines; lists chat/stream: $(listed '/api/projects/[id]/chat/stream'); canvas/upload: $(listed '/api/projects/[id]/canvas/upload'); media: $(listed '/api/projects/[id]/media/[...path]')"
+            echo "RESULT run $n: size of the dev server's saved state: $(du -sh .next/dev/cache 2>/dev/null | cut -f1)"
+            if [ "$code" != "0" ]; then
+              echo "--- the tests that failed"
+              grep -E '^ +[0-9]+\) ' "session-$n.log" | cut -c1-170
+              echo "--- what each one expected and received"
+              grep -E 'Expected:|Received:|^ +> +[0-9]+ \||SyntaxError|Test timeout' "session-$n.log" | cut -c1-200 | head -40
+            fi
+          done
+      - name: Files the tools changed
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          git status --short | cut -c1-120 || true
+          echo "--- end of list"
