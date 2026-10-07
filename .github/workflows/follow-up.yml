@@ -4,9 +4,9 @@ name: Follow-up
 # before building. The type check stopped at .next/dev/types/routes.d.ts, a file the dev server
 # writes for itself; the code itself had compiled.
 on:
+  # Started by hand now that it has answered: the branch builds in the project's order, and the
+  # unchanged main branch built after two sessions.
   workflow_dispatch:
-  push:
-    branches: ["wip/**"]
 permissions:
   contents: read
 env:

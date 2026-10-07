@@ -1,0 +1,116 @@
+name: Second session
+# Work in progress on this fork only. In the full pass three browser tests failed in a dev-server
+# session that came after an earlier session, "npm run setup" and "npm run build" in one folder:
+# addresses under /api/projects/<id>/ answered with the not-found page. A job that ran setup
+# before its first session never showed it. Each order below runs on the project's unchanged
+# main branch, one per machine, to see which step it takes. The last one is the working branch.
+on:
+  workflow_dispatch:
+  push:
+    branches: ["wip/**"]
+permissions:
+  contents: read
+env:
+  NEXT_TELEMETRY_DISABLED: "1"
+jobs:
+  order:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: main-suite-setup-build-suite
+            ref: main
+            sequence: suite setup build suite
+          - name: main-suite-setup-suite
+            ref: main
+            sequence: suite setup suite
+          - name: main-suite-build-suite
+            ref: main
+            sequence: suite build suite
+          - name: main-suite-suite
+            ref: main
+            sequence: suite suite
+          - name: main-setup-suite-build-suite
+            ref: main
+            sequence: setup suite build suite
+          - name: main-suite-setup-build-rmdev-suite
+            ref: main
+            sequence: suite setup build rmdev suite
+          - name: main-suite-setup-build-rmcache-suite
+            ref: main
+            sequence: suite setup build rmcache suite
+          - name: main-suite-setup-rmenv-suite
+            ref: main
+            sequence: suite setup rmenv suite
+          - name: wip-suite-setup-build-suite
+            ref: wip/windows-probe
+            sequence: suite setup build suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.ref }}
+      - name: The commit under test
+        run: git log -1 --format='%H %s'
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: The steps, in this job's order
+        shell: bash
+        env:
+          SEQUENCE: ${{ matrix.sequence }}
+        run: |
+          set +e
+          n=0
+          for step in $SEQUENCE; do
+            n=$((n+1))
+            echo "=== step $n: $step ($(date -u +%H:%M:%S) UTC)"
+            case "$step" in
+              suite)
+                npx playwright test > "session-$n.log" 2>&1
+                code=$?
+                echo "RESULT step $n suite: exit $code; $(grep -E '^\s+[0-9]+ (passed|failed|flaky|did not run)' "session-$n.log" | tr -s ' ' | tr '\n' ';')"
+                echo "RESULT step $n suite: lines saying 'Failed to find Server Action': $(grep -c 'Failed to find Server Action' "session-$n.log")"
+                echo "RESULT step $n suite: lines saying 'discovery failed 404': $(grep -c 'discovery failed 404' "session-$n.log")"
+                if [ "$code" != "0" ]; then
+                  echo "--- the tests that failed"
+                  grep -E '^\s+[0-9]+\) ' "session-$n.log" | cut -c1-170
+                  echo "--- what each one expected and received"
+                  grep -E 'Expected:|Received:|^\s+> +[0-9]+ \||SyntaxError|Test timeout' "session-$n.log" | cut -c1-200 | head -60
+                fi
+                ;;
+              setup)
+                npm run setup
+                echo "keys in .env.local: $(grep -cE '^[A-Za-z_][A-Za-z0-9_]*=' .env.local)"
+                ;;
+              build)
+                npm run build > "build-$n.log" 2>&1
+                code=$?
+                echo "RESULT step $n build: exit $code"
+                grep -m 12 -E 'error TS|Compiled|Failed' "build-$n.log"
+                ;;
+              rmdev)
+                rm -rf .next/dev
+                echo "removed .next/dev"
+                ;;
+              rmcache)
+                rm -rf .next/dev/cache
+                echo "removed .next/dev/cache"
+                ;;
+              rmenv)
+                rm -f .env.local
+                echo "removed .env.local"
+                ;;
+            esac
+            echo "--- .next now"
+            ls .next 2>/dev/null | tr '\n' ' '; echo
+            echo "--- .next/dev now"
+            du -sh .next/dev/* 2>/dev/null | tr '\t' ' ' | tr '\n' ';'; echo
+            echo "--- files at the top of the folder that git sees as new or changed"
+            git status --porcelain | cut -c1-120 | head -12
+          done
