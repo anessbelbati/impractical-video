@@ -295,12 +295,6 @@ function contextHookLauncherForProject(mcp, projectId, agent) {
 }
 
 function hookConfig(launcher, agent) {
-  const words = [launcher.command, ...launcher.args];
-  // Codex runs a hook through PowerShell on Windows; Claude Code uses Git Bash.
-  const command =
-    agent === "codex" && process.platform === "win32"
-      ? powershellCommand(words)
-      : words.map(shellQuote).join(" ");
   return `${JSON.stringify(
     {
       // Auto-trust the project's own .mcp.json so users never see the CLI's
@@ -320,7 +314,7 @@ function hookConfig(launcher, agent) {
           {
             hooks: [
               {
-                command,
+                ...hookCommand([launcher.command, ...launcher.args], agent),
                 timeout: 5,
                 type: "command",
               },
@@ -332,6 +326,18 @@ function hookConfig(launcher, agent) {
     null,
     2,
   )}\n`;
+}
+
+/** Both agents hand a hook command to sh, except on Windows. There Codex uses
+ * PowerShell, and Claude Code uses Git Bash, or PowerShell when Git is not
+ * installed, so no one spelling of a command line runs under both. Claude Code
+ * starts a hook that lists its arguments directly, with no shell. */
+function hookCommand(words, agent) {
+  if (process.platform !== "win32") {
+    return { command: words.map(shellQuote).join(" ") };
+  }
+  if (agent === "codex") return { command: powershellCommand(words) };
+  return { args: words.slice(1), command: words[0] };
 }
 
 /** Existing projects may predate the explicit MCP server allowlist. Merge it

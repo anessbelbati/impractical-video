@@ -394,21 +394,41 @@ test("both generated launchers bind exactly the opened project", async () => {
   const codexHooks = JSON.parse(
     await readFile(path.join(input.projectRoot, ".codex", "hooks.json"), "utf8"),
   );
-  const claudeCommand =
-    claudeHooks.hooks.UserPromptSubmit[0].hooks[0].command;
+  const claudeHook = claudeHooks.hooks.UserPromptSubmit[0].hooks[0];
   const codexCommand = codexHooks.hooks.UserPromptSubmit[0].hooks[0].command;
-  assert.match(
-    claudeCommand,
-    /--agent-context-hook --agent claude --project-id bound-project$/,
-  );
   assert.match(
     codexCommand,
     /--agent-context-hook --agent codex --project-id bound-project$/,
   );
+  if (process.platform === "win32") {
+    // No shell that runs a hook on Windows reads the sh spelling: Codex gets
+    // the command written for PowerShell, and Claude Code the program with its
+    // arguments as a list, which it starts without a shell.
+    assert.equal(
+      codexCommand,
+      `& '${launcher}' --agent-context-hook --agent codex --project-id bound-project`,
+    );
+    assert.deepEqual(claudeHook, {
+      args: [
+        "--agent-context-hook",
+        "--agent",
+        "claude",
+        "--project-id",
+        "bound-project",
+      ],
+      command: launcher,
+      timeout: 5,
+      type: "command",
+    });
+    return;
+  }
+  const claudeCommand = claudeHook.command;
+  assert.match(
+    claudeCommand,
+    /--agent-context-hook --agent claude --project-id bound-project$/,
+  );
   assert.equal(
-    // Codex runs a hook through PowerShell on Windows, where a quoted program
-    // needs the call operator.
-    `${process.platform === "win32" ? "& " : ""}${claudeCommand.replace("--agent claude", "--agent codex")}`,
+    claudeCommand.replace("--agent claude", "--agent codex"),
     codexCommand,
   );
 });
