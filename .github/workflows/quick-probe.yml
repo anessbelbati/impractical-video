@@ -1,9 +1,8 @@
 name: Quick probe
 # Work in progress on this fork only: the questions still open, each in a small job.
 on:
+  # Started by hand now that its questions are answered; the Follow-up workflow runs on a push.
   workflow_dispatch:
-  push:
-    branches: ["wip/**"]
 permissions:
   contents: read
 env:
@@ -287,9 +286,6 @@ jobs:
       - name: npm run test:smoke
         if: ${{ !cancelled() && runner.os == 'Linux' }}
         run: npm run test:smoke
-      - name: The setup-guide test twenty more times
-        if: ${{ !cancelled() && runner.os == 'Linux' && matrix.branch == 'setup-guide-reopen' }}
-        run: npx playwright test tests/smoke/onboarding.spec.ts:31 --repeat-each=20
       - name: npm run setup
         if: ${{ !cancelled() && runner.os != 'macOS' }}
         run: npm run setup

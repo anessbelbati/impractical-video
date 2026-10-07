@@ -1,0 +1,105 @@
+name: Follow-up
+# Work in progress on this fork only: one red cell of the round before, looked at again.
+# "npm run build" failed on the setup-guide branch in a job that had run the browser tests twice
+# before building. The type check stopped at .next/dev/types/routes.d.ts, a file the dev server
+# writes for itself; the code itself had compiled.
+on:
+  workflow_dispatch:
+  push:
+    branches: ["wip/**"]
+permissions:
+  contents: read
+env:
+  NEXT_TELEMETRY_DISABLED: "1"
+jobs:
+  setup-guide-branch-in-project-order:
+    # The branch through the project's own CI steps in the project's own order: one dev-server
+    # session, then setup and build. The audit step is left out (it fails on main too).
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: setup-guide-reopen
+      - name: The commit under test
+        run: git log -1 --format='%H %s'
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: Configure Electron for Linux tests
+        run: |
+          node node_modules/electron/install.js
+          sudo chown root:root node_modules/electron/dist/chrome-sandbox
+          sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
+      - name: npm run check
+        if: ${{ !cancelled() }}
+        run: xvfb-run --auto-servernum npm run check
+      - name: npm run release:scan
+        if: ${{ !cancelled() }}
+        run: npm run release:scan
+      - name: npm run test:smoke
+        if: ${{ !cancelled() }}
+        run: npm run test:smoke
+      - name: npm run setup
+        if: ${{ !cancelled() }}
+        run: npm run setup
+      - name: npm run build
+        if: ${{ !cancelled() }}
+        run: npm run build
+      - name: npm run release:source
+        if: ${{ !cancelled() }}
+        run: npm run release:source
+      - name: Verify exported agent guides
+        if: ${{ !cancelled() }}
+        run: test ! -L dist/source/video-fs/CLAUDE.md && cmp AGENTS.md dist/source/video-fs/CLAUDE.md
+      - name: The setup-guide test twenty more times
+        if: ${{ !cancelled() }}
+        run: npx playwright test tests/smoke/onboarding.spec.ts:31 --repeat-each=20
+
+  main-two-dev-sessions-then-build:
+    # The order that failed, on the project's unchanged main branch (the fork's main): two
+    # dev-server sessions, then setup and the first build. Shows the file the type check stopped at.
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: The commit under test
+        run: git log -1 --format='%H %s'
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: 1 - first dev-server session, the whole browser suite
+        if: ${{ !cancelled() }}
+        run: |
+          npx playwright test || echo "RESULT the suite had failures (its setup-guide test fails at random on this branch)"
+          wc -l .next/dev/types/routes.d.ts
+          tail -c 300 .next/dev/types/routes.d.ts
+      - name: 2 - second dev-server session, one test twenty times
+        if: ${{ !cancelled() }}
+        run: |
+          npx playwright test tests/smoke/onboarding.spec.ts:31 --repeat-each=20 || echo "RESULT the repeated test had failures (expected at random on this branch)"
+          wc -l .next/dev/types/routes.d.ts
+          echo "--- lines 125 to 160 of the dev server's own types file"
+          sed -n '125,160p' .next/dev/types/routes.d.ts | cut -c1-200
+          echo "--- its last 300 bytes"
+          tail -c 300 .next/dev/types/routes.d.ts
+      - name: 3 - setup, then the first build
+        if: ${{ !cancelled() }}
+        run: |
+          npm run setup
+          npm run build > build-1.log 2>&1 && echo "RESULT first build after two sessions: passed" || echo "RESULT first build after two sessions: FAILED"
+          grep -m 12 -E "error TS|Compiled|Failed" build-1.log || true
+      - name: 4 - the same build once the dev server's folder is removed
+        if: ${{ !cancelled() }}
+        run: |
+          rm -rf .next/dev
+          npm run build > build-2.log 2>&1 && echo "RESULT build with .next/dev removed: passed" || echo "RESULT build with .next/dev removed: FAILED"
+          grep -m 12 -E "error TS|Compiled|Failed" build-2.log || true
