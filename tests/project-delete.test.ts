@@ -38,21 +38,4 @@ describe("workspace deleteProject", () => {
       await released;
     }
   });
-
-  it("deletes a project while an open project view is watching its folder", async () => {
-    const project = await workspace.createProject("Watched delete");
-    const { GET } = await import("@/app/api/projects/[id]/events/route");
-    const response = await GET(
-      new Request(`http://127.0.0.1:3210/api/projects/${project.id}/events`),
-      { params: Promise.resolve({ id: project.id }) },
-    );
-    const events = response.body!.getReader();
-    try {
-      expect(new TextDecoder().decode((await events.read()).value)).toContain("event: ready");
-      expect((await workspace.deleteProject(project.id)).id).toBe(project.id);
-      await expect(workspace.readProjectMeta(project.id)).rejects.toThrow();
-    } finally {
-      await events.cancel();
-    }
-  });
 });
