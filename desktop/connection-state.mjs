@@ -59,8 +59,8 @@ export async function readPrivateConnectionState(filePath, { requireLivePid = tr
     throw new Error(desktopUnavailableMessage());
   }
   // Windows has no group/other mode bits: Node reports 0666 for every writable
-  // file, so this check could never pass there. The record's privacy comes from
-  // the access list of the per-user folder it is written into.
+  // file, so this check could never pass there. On Windows the record is as
+  // private as the folder it is in, by default Electron's per-user data folder.
   if (process.platform !== "win32" && (info.mode & 0o077) !== 0) {
     throw new Error("Video FS Desktop connection record permissions must be 0600.");
   }
