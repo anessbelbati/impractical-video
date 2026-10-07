@@ -1,0 +1,257 @@
+name: Quick probe
+# Work in progress on this fork only: the questions still open, each in a small job.
+on:
+  workflow_dispatch:
+  push:
+    branches: ["wip/**"]
+permissions:
+  contents: read
+env:
+  NEXT_TELEMETRY_DISABLED: "1"
+  UPSTREAM_MAIN: 5ed59e018b1ec7881bcef1fe8e13f976c669389c
+jobs:
+  hooks-windows:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Electron binary
+        run: node node_modules/electron/install.js
+      - name: The tests of what the app writes for the two agents
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          node --test desktop/agent-setup.test.mjs desktop/codex-hook-compatibility.test.mjs
+          npx vitest run tests/agent-onboarding-status.test.ts
+      - name: Both agents, installed the way the app installs them
+        if: ${{ !cancelled() }}
+        timeout-minutes: 12
+        shell: powershell
+        run: |
+          npm install -g @openai/codex
+          try { irm https://claude.ai/install.ps1 | iex } catch { "the installer failed: $_" }
+          if (-not (Test-Path (Join-Path $HOME ".local\bin\claude.exe"))) { npm install -g @anthropic-ai/claude-code }
+      - name: The real Codex takes a prompt in a project the app prepared
+        if: ${{ !cancelled() }}
+        timeout-minutes: 12
+        run: node .github/probe/codex-runs-hooks.mjs
+      - name: The real Claude Code takes a prompt in a project the app prepared
+        if: ${{ !cancelled() }}
+        timeout-minutes: 15
+        run: node .github/probe/claude-runs-hooks.mjs
+      - name: A Claude Code release from before hooks could list their arguments
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        timeout-minutes: 12
+        shell: pwsh
+        run: |
+          $versions = npm view @anthropic-ai/claude-code versions --json | ConvertFrom-Json
+          $old = $versions | Where-Object { $_ -match '^2\.1\.(\d+)$' -and [int]$Matches[1] -lt 139 } | Select-Object -Last 1
+          "newest release below 2.1.139: $old"
+          $prefix = Join-Path $env:RUNNER_TEMP "claude-old"
+          npm install --prefix $prefix "@anthropic-ai/claude-code@$old" 2>&1 | Select-Object -Last 3
+          $env:PROBE_CLAUDE = Join-Path $prefix "node_modules\.bin\claude.cmd"
+          $env:PROBE_FIRST_CASE_ONLY = "1"
+          node .github/probe/claude-runs-hooks.mjs
+
+  hooks-windows-without-git-bash:
+    # Claude Code starts a hook through Git Bash when it finds one. This job hides Git for one
+    # step to see what a machine without it does. Kept apart so that nothing else depends on it.
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Electron binary
+        run: node node_modules/electron/install.js
+      - name: Claude Code from its own installer
+        timeout-minutes: 10
+        shell: powershell
+        run: |
+          try { irm https://claude.ai/install.ps1 | iex } catch { "the installer failed: $_" }
+          if (-not (Test-Path (Join-Path $HOME ".local\bin\claude.exe"))) { npm install -g @anthropic-ai/claude-code }
+      - name: The real Claude Code takes a prompt with Git hidden
+        if: ${{ !cancelled() }}
+        timeout-minutes: 20
+        shell: pwsh
+        run: |
+          Rename-Item "C:\Program Files\Git" "Git-hidden" -ErrorAction Stop
+          try {
+            $env:Path = ($env:Path -split ";" | Where-Object { $_ -and ($_ -notmatch '\\Git(\\|$)') }) -join ";"
+            Remove-Item Env:CLAUDE_CODE_GIT_BASH_PATH -ErrorAction SilentlyContinue
+            "git on the search path now: $((Get-Command git -ErrorAction SilentlyContinue).Source)"
+            "bash on the search path now: $((Get-Command bash -ErrorAction SilentlyContinue).Source)"
+            node .github/probe/claude-runs-hooks.mjs
+          } finally {
+            Rename-Item "C:\Program Files\Git-hidden" "Git"
+          }
+
+  hooks-macos:
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Electron binary
+        run: node node_modules/electron/install.js
+      - name: npm run check
+        if: ${{ !cancelled() }}
+        timeout-minutes: 25
+        run: npm run check
+      - name: The real Codex takes a prompt in a project the app prepared
+        if: ${{ !cancelled() }}
+        timeout-minutes: 12
+        run: |
+          npm install -g @openai/codex
+          node .github/probe/codex-runs-hooks.mjs
+      - name: The real Claude Code takes a prompt in a project the app prepared
+        if: ${{ !cancelled() }}
+        timeout-minutes: 12
+        run: |
+          npm install -g @anthropic-ai/claude-code
+          node .github/probe/claude-runs-hooks.mjs
+
+  hooks-linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Configure Electron for Linux tests
+        run: |
+          node node_modules/electron/install.js
+          sudo chown root:root node_modules/electron/dist/chrome-sandbox
+          sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
+      - name: The real Codex takes a prompt in a project the app prepared
+        if: ${{ !cancelled() }}
+        timeout-minutes: 12
+        run: |
+          npm install -g @openai/codex
+          xvfb-run --auto-servernum node .github/probe/codex-runs-hooks.mjs
+      - name: The real Claude Code takes a prompt in a project the app prepared
+        if: ${{ !cancelled() }}
+        timeout-minutes: 12
+        run: |
+          npm install -g @anthropic-ai/claude-code
+          xvfb-run --auto-servernum node .github/probe/claude-runs-hooks.mjs
+
+  browser-windows-upload:
+    # On Windows the project's fresh-install test got a 500 for its upload twelve times out of
+    # twelve when it was the first test a server saw, and passed inside the whole suite.
+    runs-on: windows-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install chromium
+      - name: 1 - their fresh-install test alone, the first thing any server here sees
+        if: ${{ !cancelled() }}
+        timeout-minutes: 12
+        run: npx playwright test tests/smoke/local.spec.ts:3 --repeat-each=2
+      - name: 2 - the upload probe on a new server
+        if: ${{ !cancelled() }}
+        timeout-minutes: 12
+        run: npx playwright test -c .github/probe/browser/playwright.config.ts
+      - name: 3 - the whole suite
+        if: ${{ !cancelled() }}
+        timeout-minutes: 20
+        run: npx playwright test
+      - name: 4 - their fresh-install test alone again
+        if: ${{ !cancelled() }}
+        timeout-minutes: 12
+        run: npx playwright test tests/smoke/local.spec.ts:3 --repeat-each=2
+      - name: 5 - the upload probe again
+        if: ${{ !cancelled() }}
+        timeout-minutes: 12
+        run: npx playwright test -c .github/probe/browser/playwright.config.ts
+      - name: 6 - their fresh-install test alone after the dev server's saved state is removed
+        if: ${{ !cancelled() }}
+        timeout-minutes: 12
+        shell: pwsh
+        run: |
+          Remove-Item -Recurse -Force .next -ErrorAction SilentlyContinue
+          npx playwright test tests/smoke/local.spec.ts:3 --repeat-each=2
+
+  browser-linux-upload:
+    # The same first two steps where the suite is known to pass, for comparison.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: 1 - their fresh-install test alone, the first thing any server here sees
+        if: ${{ !cancelled() }}
+        timeout-minutes: 10
+        run: npx playwright test tests/smoke/local.spec.ts:3 --repeat-each=2
+      - name: 2 - the upload probe on a new server
+        if: ${{ !cancelled() }}
+        timeout-minutes: 10
+        run: npx playwright test -c .github/probe/browser/playwright.config.ts
+
+  browser-linux-setup-guide:
+    # The browser test that fails on the project's own main branch: with and without the fix, as
+    # the test is written now and as it was.
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: git fetch --depth=1 origin "$UPSTREAM_MAIN"
+      - name: The test as written now, the code with the fix, 20 times
+        if: ${{ !cancelled() }}
+        timeout-minutes: 12
+        run: npx playwright test tests/smoke/onboarding.spec.ts:31 --repeat-each=20
+      - name: The test as it was, the code with the fix, 40 times
+        if: ${{ !cancelled() }}
+        timeout-minutes: 20
+        run: |
+          git show "$UPSTREAM_MAIN:tests/smoke/onboarding.spec.ts" > tests/smoke/onboarding.spec.ts
+          npx playwright test tests/smoke/onboarding.spec.ts:31 --repeat-each=40 && echo "RESULT old test, new code: all passed" || echo "RESULT old test, new code: FAILURES"
+          git checkout -- tests/smoke/onboarding.spec.ts
+      - name: The test as written now, the code from before the fix, 6 times
+        if: ${{ !cancelled() }}
+        timeout-minutes: 12
+        run: |
+          git show "$UPSTREAM_MAIN:components/onboarding/welcome-modal.tsx" > components/onboarding/welcome-modal.tsx
+          git show "$UPSTREAM_MAIN:app/app-shell.tsx" > app/app-shell.tsx
+          npx playwright test tests/smoke/onboarding.spec.ts:31 --repeat-each=6 && echo "RESULT new test, old code: all passed" || echo "RESULT new test, old code: FAILURES"
+      - name: The test as it was, the code from before the fix, 24 times
+        if: ${{ !cancelled() }}
+        timeout-minutes: 15
+        run: |
+          git show "$UPSTREAM_MAIN:components/onboarding/welcome-modal.tsx" > components/onboarding/welcome-modal.tsx
+          git show "$UPSTREAM_MAIN:app/app-shell.tsx" > app/app-shell.tsx
+          git show "$UPSTREAM_MAIN:tests/smoke/onboarding.spec.ts" > tests/smoke/onboarding.spec.ts
+          npx playwright test tests/smoke/onboarding.spec.ts:31 --repeat-each=24 && echo "RESULT old test, old code: all passed" || echo "RESULT old test, old code: FAILURES"
+          git checkout -- tests/smoke/onboarding.spec.ts components/onboarding/welcome-modal.tsx app/app-shell.tsx

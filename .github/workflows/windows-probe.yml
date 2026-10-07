@@ -2,9 +2,8 @@ name: Fix probe
 # Work in progress on this fork only. Runs every check separately and keeps going after a failure,
 # so one run shows everything that still breaks on Windows and that nothing broke on Linux.
 on:
+  # Started by hand for a full pass; the Quick probe workflow answers single questions on a push.
   workflow_dispatch:
-  push:
-    branches: ["wip/**"]
 permissions:
   contents: read
 jobs:

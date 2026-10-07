@@ -148,6 +148,15 @@ function whatReachedWhom() {
   console.log("what the app's stand-in was asked:", JSON.stringify(project.calls));
   const asked = model.requests.filter((request) => request.method === "POST");
   console.log(`requests to the stand-in model server: ${asked.length}; the app's context was in ${asked.filter((request) => request.body.includes("video-fs-context")).length} of them; a stand-in hook's line was in ${asked.filter((request) => /recorder [a-z-]+\/[a-z-]+ ran/.test(request.body)).length}`);
+  const tools = [...new Set(asked.flatMap((request) => {
+    try {
+      return (JSON.parse(request.body).tools ?? []).map((tool) => tool.name ?? tool.type);
+    } catch {
+      return [];
+    }
+  }))];
+  const appTools = tools.filter((name) => /video[-_]fs/i.test(String(name)));
+  console.log(`tools Codex offered the model: ${tools.length}; of the app: ${appTools.length}${appTools.length ? ` (${appTools.slice(0, 4).join(", ")}, ...)` : ` (all names: ${tools.slice(0, 12).join(", ")})`}`);
 }
 
 /** One prompt through the app server, the part of Codex its own windows talk to. `approve` skips
@@ -200,7 +209,8 @@ async function execPrompt(title) {
   const codexHome = await home();
   const started = Date.now();
   const result = await new Promise((resolve) => {
-    const child = spawn(process.execPath, [codexScript, "exec", "--skip-git-repo-check", "-c", "bypass_hook_trust=true", prompt], {
+    // The flag Codex's own test of this command uses to run a hook nobody has approved by hand.
+    const child = spawn(process.execPath, [codexScript, "exec", "--skip-git-repo-check", "--dangerously-bypass-hook-trust", prompt], {
       cwd: project.projectRoot,
       env: { ...process.env, CODEX_HOME: codexHome, RUST_LOG: "warn", VIDEO_FS_DESKTOP_STATE_FILE: project.statePath },
       stdio: ["ignore", "pipe", "pipe"],

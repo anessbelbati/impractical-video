@@ -68,6 +68,8 @@ export async function appProject(projectId) {
   return {
     base,
     calls,
+    /** The program and the arguments the app's hook is made of. */
+    hookWords: (agent) => [electron, mainPath, "--agent-context-hook", "--agent", agent, "--project-id", projectId],
     /** The app's hook command as it was written before this change, for every shell alike. */
     oldCommand: (agent) => [electron, mainPath, "--agent-context-hook", "--agent", agent, "--project-id", projectId].map(posixQuote).join(" "),
     projectRoot,
@@ -114,7 +116,7 @@ export async function recorderHooks(base) {
       handlers.push({ command: `${write(script)} ${label}`, timeout: 30, type: "command" });
     }
   }
-  return { handlers, logPath: path.join(base, "hook-log.jsonl") };
+  return { awkward, handlers, logPath: path.join(base, "hook-log.jsonl"), plain };
 }
 
 export async function recorderLog(logPath) {
