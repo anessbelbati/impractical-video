@@ -10,5 +10,8 @@ export default defineConfig({
     url: "http://localhost:3317",
     timeout: 180_000,
     reuseExistingServer: false,
+    // Without this the server is SIGKILLed: smoke-server.mjs never removes its temporary
+    // data folder and the dev server never closes its cache. Ignored on Windows.
+    gracefulShutdown: { signal: "SIGTERM", timeout: 30_000 },
   },
 });
