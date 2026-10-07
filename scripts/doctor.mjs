@@ -10,7 +10,11 @@ function check(label, ok, help, required = true) {
   if (!ok && required) failed = true;
 }
 function installed(command, args = ["--version"]) {
-  return spawnSync(command, args, { stdio: "ignore", timeout: 10_000 }).status === 0;
+  const options = { stdio: "ignore", timeout: 10_000 };
+  if (process.platform !== "win32") return spawnSync(command, args, options).status === 0;
+  // npm installs Windows commands as .cmd launchers, which only cmd.exe starts.
+  // No Windows file name holds a double quote, so the quoted name stays one word.
+  return !command.includes('"') && spawnSync(`"${command}" ${args.join(" ")}`, { ...options, shell: true }).status === 0;
 }
 check("Node.js 22.13+", Number(process.versions.node.split(".")[0]) > 22 || (Number(process.versions.node.split(".")[0]) === 22 && Number(process.versions.node.split(".")[1]) >= 13), "Use the Node version in .nvmrc.");
 check("Git", installed("git"), "Install Git for agent project setup.");
