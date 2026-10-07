@@ -11,6 +11,10 @@ const nextConfig: NextConfig = {
     // tabs within this window re-renders from the prefetched payload instead
     // of a full round-trip, so tab switches feel instant.
     staleTimes: { dynamic: 60, static: 300 },
+    // The smoke server sets VIDEO_FS_DEV_CACHE=off. Before 16.4, `next dev` can
+    // start with part of its route table missing (vercel/next.js#96139), and the
+    // smoke suite has only hit that with the dev cache on.
+    ...(process.env.VIDEO_FS_DEV_CACHE === "off" ? { turbopackFileSystemCacheForDev: false } : {}),
   },
   serverExternalPackages: ["@fal-ai/client", "pdf-parse"],
   // The vendored opencut editor's transcription worker imports
