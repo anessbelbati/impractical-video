@@ -47,3 +47,29 @@ jobs:
           name: video-fs-source
           path: dist/source/video-fs
           include-hidden-files: true
+  verify-windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install chromium
+      - run: node node_modules/electron/install.js
+      - run: npm run check
+      - run: npm run test:smoke
+      - name: Upload browser failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-failures-windows
+          path: test-results/
+          if-no-files-found: ignore
+          retention-days: 7
+      - run: npm run setup
+      - run: npm run build
