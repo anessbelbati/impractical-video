@@ -53,6 +53,7 @@ test("packaging manifest includes the self-contained setup helper", async () => 
   assert.ok(manifest.build.files.includes("agent-context-hook.mjs"));
   assert.ok(manifest.build.files.includes("setup-agent.mjs"));
   assert.ok(manifest.build.files.includes("main.mjs"));
+  assert.ok(manifest.build.files.includes("standard-input.mjs"));
   assert.ok(
     manifest.build.extraResources.some(
       (entry) => entry.from === "../skills" && entry.to === "skills",
@@ -67,14 +68,15 @@ test("fresh project receives Claude and Codex project-local configuration at mod
   assert.deepEqual(result.codexProjectRoot, { status: "created" });
   assert.equal(await readlink(path.join(input.projectRoot, "AGENTS.md")), "VIDEO_FS_AGENT_GUIDE.md");
   assert.equal(await readlink(path.join(input.projectRoot, "CLAUDE.md")), "AGENTS.md");
-  assert.equal((await stat(path.join(input.projectRoot, "VIDEO_FS_AGENT_GUIDE.md"))).mode & 0o777, 0o600);
   for (const relativePath of [
+    "VIDEO_FS_AGENT_GUIDE.md",
     ".mcp.json",
     ".claude/settings.json",
     ".codex/config.toml",
     ".codex/hooks.json",
   ]) {
-    assert.equal((await stat(path.join(input.projectRoot, relativePath))).mode & 0o777, 0o600);
+    const mode = (await stat(path.join(input.projectRoot, relativePath))).mode & 0o777;
+    if (process.platform !== "win32") assert.equal(mode, 0o600);
   }
   assert.match(
     await readFile(path.join(input.projectRoot, "AGENTS.md"), "utf8"),
@@ -218,8 +220,9 @@ test("legacy app-owned Codex hooks lose the Claude keys that make Codex reject t
     ),
     { hooks },
   );
-  // With the two keys gone the file is today's output, so nothing conflicts.
-  assert.deepEqual(result.conflicts, []);
+  // The command the desktop wrote earlier is still today's, except on
+  // Windows, where Codex needs it written for PowerShell.
+  if (process.platform !== "win32") assert.deepEqual(result.conflicts, []);
 });
 
 test("fresh project becomes a valid Codex project root without user Git setup", async () => {
@@ -235,7 +238,8 @@ test("fresh project becomes a valid Codex project root without user Git setup", 
     "rev-parse",
     "--show-toplevel",
   ]);
-  assert.equal(stdout.trim(), await realpath(input.projectRoot));
+  // Git prints forward slashes on every platform.
+  assert.equal(path.resolve(stdout.trim()), await realpath(input.projectRoot));
   await assert.rejects(
     () =>
       execFileAsync("git", [
@@ -399,16 +403,38 @@ test("both generated launchers bind exactly the opened project", async () => {
   const codexHooks = JSON.parse(
     await readFile(path.join(input.projectRoot, ".codex", "hooks.json"), "utf8"),
   );
-  const claudeCommand =
-    claudeHooks.hooks.UserPromptSubmit[0].hooks[0].command;
+  const claudeHook = claudeHooks.hooks.UserPromptSubmit[0].hooks[0];
   const codexCommand = codexHooks.hooks.UserPromptSubmit[0].hooks[0].command;
-  assert.match(
-    claudeCommand,
-    /--agent-context-hook --agent claude --project-id bound-project$/,
-  );
   assert.match(
     codexCommand,
     /--agent-context-hook --agent codex --project-id bound-project$/,
+  );
+  if (process.platform === "win32") {
+    // No shell that runs a hook on Windows reads the sh spelling: Codex gets
+    // the command written for PowerShell, and Claude Code the program with its
+    // arguments as a list, which it starts without a shell.
+    assert.equal(
+      codexCommand,
+      `& '${launcher}' --agent-context-hook --agent codex --project-id bound-project`,
+    );
+    assert.deepEqual(claudeHook, {
+      args: [
+        "--agent-context-hook",
+        "--agent",
+        "claude",
+        "--project-id",
+        "bound-project",
+      ],
+      command: launcher,
+      timeout: 5,
+      type: "command",
+    });
+    return;
+  }
+  const claudeCommand = claudeHook.command;
+  assert.match(
+    claudeCommand,
+    /--agent-context-hook --agent claude --project-id bound-project$/,
   );
   assert.equal(
     claudeCommand.replace("--agent claude", "--agent codex"),

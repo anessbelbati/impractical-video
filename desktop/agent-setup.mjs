@@ -309,9 +309,6 @@ function contextHookLauncherForProject(mcp, projectId, agent) {
 }
 
 function hookConfig(launcher, agent) {
-  const command = [launcher.command, ...launcher.args]
-    .map(shellQuote)
-    .join(" ");
   return `${JSON.stringify(
     {
       // Auto-trust the project's own .mcp.json so users never see the CLI's
@@ -331,7 +328,7 @@ function hookConfig(launcher, agent) {
           {
             hooks: [
               {
-                command,
+                ...hookCommand([launcher.command, ...launcher.args], agent),
                 timeout: 5,
                 type: "command",
               },
@@ -343,6 +340,19 @@ function hookConfig(launcher, agent) {
     null,
     2,
   )}\n`;
+}
+
+/** Both agents hand a hook command to sh, except on Windows. There Codex uses
+ * PowerShell, and Claude Code uses Git Bash, or PowerShell when Git is not
+ * installed, so no one spelling of a command line runs under both. Claude Code
+ * 2.1.139 and later start a hook that lists its arguments directly, with no
+ * shell; an earlier release skips such a hook and sends the prompt without it. */
+function hookCommand(words, agent) {
+  if (process.platform !== "win32") {
+    return { command: words.map(shellQuote).join(" ") };
+  }
+  if (agent === "codex") return { command: powershellCommand(words) };
+  return { args: words.slice(1), command: words[0] };
 }
 
 /** Existing projects may predate the explicit MCP server allowlist. Merge it
@@ -794,6 +804,16 @@ function connectionGuide({
 function shellQuote(value) {
   if (/^[A-Za-z0-9_./:@%+=,-]+$/.test(value)) return value;
   return `'${value.replaceAll("'", "'\"'\"'")}'`;
+}
+
+/** PowerShell reads a line that starts with a quoted string as a value, not as
+ * a program to run, unless the call operator comes first. */
+function powershellCommand(words) {
+  return `& ${words
+    .map((word) =>
+      /^[A-Za-z0-9_-]+$/.test(word) ? word : `'${word.replaceAll("'", "''")}'`,
+    )
+    .join(" ")}`;
 }
 
 function tomlString(value) {
