@@ -17,6 +17,7 @@ const env = {
   VIDEO_FS_SETTINGS_ROOT: path.join(temporary, "settings"),
   PAPER_MCP_TOKEN: "smoke-only-token-not-a-production-credential",
   NEXT_TELEMETRY_DISABLED: "1",
+  VIDEO_FS_DEV_CACHE: "off",
 };
 const child = spawn(process.execPath, ["node_modules/next/dist/bin/next", "dev", "--hostname", "localhost", "--port", "3317"], { env, stdio: "inherit" });
 for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => child.kill(signal));
