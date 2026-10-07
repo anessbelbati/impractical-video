@@ -11,6 +11,9 @@ const nextConfig: NextConfig = {
     // tabs within this window re-renders from the prefetched payload instead
     // of a full round-trip, so tab switches feel instant.
     staleTimes: { dynamic: 60, static: 300 },
+    // The smoke server sets this to "off": a dev cache left by one smoke run can
+    // make the next run answer API routes with the not-found page.
+    turbopackFileSystemCacheForDev: process.env.VIDEO_FS_DEV_CACHE !== "off",
   },
   serverExternalPackages: ["@fal-ai/client", "pdf-parse"],
   // The vendored opencut editor's transcription worker imports
