@@ -214,10 +214,10 @@ export async function ensureProjectsRoot() {
   await mkdir(DATA_ROOT, { recursive: true });
 }
 
-/** Windows refuses to replace a file while another handle to it is open, so a
- * read that overlaps the rename fails the write with EPERM. Readers and virus
- * scanners let go within milliseconds: wait for the gap instead of losing the
- * write. */
+/** Windows refuses to replace a file while another handle to it is open, and
+ * to move a folder while a file inside it is open, so a read that overlaps the
+ * rename fails it with EPERM. Readers and virus scanners let go within
+ * milliseconds: wait for the gap instead of losing the write or the delete. */
 async function renameOverReaders(source: string, target: string) {
   const deadline = Date.now() + 10_000;
   for (let delay = 5; ; delay = Math.min(delay * 2, 100)) {
@@ -848,7 +848,7 @@ export async function deleteProject(projectId: string, ownerUserId?: string | nu
     JSON.stringify({ ...meta, deletedAt: nowIso(), originalId: projectId }, null, 2),
     "utf8",
   );
-  await rename(source, target);
+  await renameOverReaders(source, target);
   return { id: projectId, trashed_path: path.relative(process.cwd(), target).replaceAll(path.sep, "/") };
 }
 
