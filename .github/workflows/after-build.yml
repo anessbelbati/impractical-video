@@ -1,10 +1,13 @@
 name: Second session
 # Work in progress on this fork only. On the project's unchanged main branch a second run of the
 # browser suite in one folder sometimes loses three addresses under /api/projects/<id>/ (they
-# answer with the not-found page), and three tests fail. Round 9 saw it after "suite, setup,
-# build" and after "suite, setup, then .env.local removed again", and not after four other
-# orders, once each. This repeats five orders four times each to tell an order from chance, and
-# runs one of them on macOS.
+# answer with the not-found page), and three tests fail: 9 of 22 second runs on Linux in rounds 9
+# and 10, none of 6 after the dev server's folder was removed first. Round 11 runs the order that
+# failed most ("suite, setup, build, suite") on the unchanged main branch and on two candidate
+# changes, each cut from main:
+#   cold-start  the test server starts the dev server without its saved state (smoke-cold-start)
+#   clean-stop  Playwright stops the test server with SIGTERM and waits for it (smoke-clean-stop)
+# and, on Windows, on the Windows branch with and without the first change.
 on:
   workflow_dispatch:
   push:
@@ -14,72 +17,94 @@ permissions:
 env:
   NEXT_TELEMETRY_DISABLED: "1"
 jobs:
-  order:
-    name: ${{ matrix.order }}-${{ matrix.try }}${{ matrix.os == 'macos-latest' && '-mac' || '' }}
+  arm:
+    name: ${{ matrix.arm }}-${{ matrix.try }}${{ matrix.os == 'macos-latest' && '-mac' || '' }}
     strategy:
       fail-fast: false
       matrix:
-        order:
-          - suite-setup-build-suite
-          - suite-setup-suite
-          - suite-suite
-          - suite-setup-build-rmdev-suite
-          - suite-setup-rmenv-suite
-        try: [1, 2, 3, 4]
+        arm: [main, cold-start, clean-stop]
+        try: [1, 2, 3, 4, 5, 6, 7, 8]
         os: [ubuntu-latest]
+        exclude:
+          - arm: main
+            try: 7
+          - arm: main
+            try: 8
         include:
-          - order: suite-setup-build-suite
+          - arm: main
             try: 1
             os: macos-latest
-          - order: suite-setup-build-suite
+          - arm: cold-start
+            try: 1
+            os: macos-latest
+          - arm: cold-start
             try: 2
             os: macos-latest
-          - order: suite-setup-build-rmdev-suite
+          - arm: clean-stop
             try: 1
             os: macos-latest
+          - arm: clean-stop
+            try: 2
+            os: macos-latest
+          - arm: win-base
+            try: 1
+            os: windows-latest
+          - arm: win-base
+            try: 2
+            os: windows-latest
+          - arm: win-cold-start
+            try: 1
+            os: windows-latest
+          - arm: win-cold-start
+            try: 2
+            os: windows-latest
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: main
+          ref: ${{ fromJSON('{"main":"main","cold-start":"smoke-cold-start","clean-stop":"smoke-clean-stop","win-base":"windows-support","win-cold-start":"try-windows-cold-start"}')[matrix.arm] }}
+          fetch-depth: 2
       - name: The commit under test
-        run: git log -1 --format='%H %s'
+        shell: bash
+        run: |
+          git log -1 --format='%H %s'
+          echo "--- files this commit changes"
+          git show --stat --format= HEAD | cut -c1-120
       - uses: actions/setup-node@v4
         with:
           node-version-file: .nvmrc
           cache: npm
       - run: npm ci
       - run: npx playwright install --with-deps chromium
-      - name: The steps, in this job's order
+      - name: Suite, setup, build, suite
         shell: bash
-        env:
-          ORDER: ${{ matrix.order }}
         run: |
           set +e
+          tmpcount() { node -e "const fs=require('fs'),os=require('os');console.log(fs.readdirSync(os.tmpdir()).filter(n=>n.startsWith('video-fs-smoke-')).length)"; }
+          port_answers() { node -e "const s=require('net').connect(3317,'localhost');s.on('connect',()=>{console.log('yes');process.exit(0)});s.on('error',()=>{console.log('no');process.exit(0)})"; }
           n=0
-          for step in ${ORDER//-/ }; do
+          for step in suite setup build suite; do
             n=$((n+1))
             echo "=== step $n: $step ($(date -u +%H:%M:%S) UTC)"
             case "$step" in
               suite)
+                t0=$(date +%s)
                 npx playwright test > "session-$n.log" 2>&1
                 code=$?
+                t1=$(date +%s)
                 echo "RESULT step $n suite: exit $code; $(grep -E '^ +[0-9]+ (passed|failed|flaky|did not run)' "session-$n.log" | tr -s ' ' | tr '\n' ';')"
+                echo "RESULT step $n suite: the whole command took $((t1-t0)) s"
                 echo "RESULT step $n suite: lines saying 'Failed to find Server Action': $(grep -c 'Failed to find Server Action' "session-$n.log")"
                 echo "RESULT step $n suite: lines saying 'discovery failed 404': $(grep -c 'discovery failed 404' "session-$n.log")"
+                echo "RESULT step $n suite: folders named video-fs-smoke-* in the temp folder: $(tmpcount)"
+                echo "RESULT step $n suite: something still answers on port 3317: $(port_answers)"
                 if [ "$code" != "0" ]; then
                   echo "--- the tests that failed"
                   grep -E '^ +[0-9]+\) ' "session-$n.log" | cut -c1-170
                   echo "--- what each one expected and received"
                   grep -E 'Expected:|Received:|^ +> +[0-9]+ \||SyntaxError|Test timeout' "session-$n.log" | cut -c1-200 | head -40
                 fi
-                echo "--- the dev server's lines about its saved state"
-                grep -i -E 'turbopack|persist|filesystem cache|invalidat' "session-$n.log" | cut -c1-200 | sort | uniq -c | head -8
-                echo "--- compiled files the dev server holds for four addresses after this session"
-                for k in "chat/stream" "canvas/upload" "/media/" "canvas/state"; do
-                  echo "$k: $(find .next/dev/server -path "*projects*" -path "*$k*" -type f 2>/dev/null | wc -l | tr -d ' ') files"
-                done
                 ;;
               setup)
                 npm run setup
@@ -88,23 +113,21 @@ jobs:
                 npm run build > "build-$n.log" 2>&1
                 code=$?
                 echo "RESULT step $n build: exit $code"
-                if [ "$code" != "0" ]; then tail -n 30 "build-$n.log" | cut -c1-220; fi
-                ;;
-              rmdev)
-                rm -rf .next/dev
-                echo "removed .next/dev"
-                ;;
-              rmenv)
-                rm -f .env.local
-                echo "removed .env.local"
+                echo "RESULT step $n build: lines in .next/dev/types/routes.d.ts: $(wc -l < .next/dev/types/routes.d.ts 2>/dev/null | tr -d ' ')"
+                if [ "$code" != "0" ]; then
+                  echo "--- the build's error lines"
+                  grep -n -E 'error TS[0-9]+|Type error|Failed to compile|Build error|^Error' "build-$n.log" | cut -c1-200 | head -12
+                  echo "--- .next/dev/types/routes.d.ts, its last 40 lines"
+                  tail -n 40 .next/dev/types/routes.d.ts | cut -c1-170
+                fi
                 ;;
             esac
             echo "--- size of the dev server's saved state: $(du -sh .next/dev/cache 2>/dev/null | cut -f1)"
           done
 
   main-build-without-setup:
-    # In round 9 "npm run build" ended with 1 on the unchanged main branch in the one order that
-    # had not run "npm run setup" first. This prints what it says.
+    # "npm run build" ends with 1 on the unchanged main branch when "npm run setup" has not run.
+    # Round 10 printed only the build's last lines, which were warnings. This prints its errors.
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -122,4 +145,8 @@ jobs:
           set +e
           npm run build > build.log 2>&1
           echo "RESULT build without setup: exit $?"
-          tail -n 40 build.log | cut -c1-220
+          echo "--- lines of the build's output: $(wc -l < build.log | tr -d ' ')"
+          echo "--- its first 25 lines"
+          head -n 25 build.log | cut -c1-200
+          echo "--- every line that says error, outside the warning blocks"
+          grep -n -i -E 'error|missing|not set|required' build.log | grep -v -i -E 'turbopackIgnore|This can slow down' | cut -c1-220 | head -30

@@ -1,10 +1,9 @@
 name: Branch agents
 # Work in progress on this fork only. The real Codex and Claude Code against each branch as it
 # would be proposed: the branch is checked out, and only the probe scripts are added on top.
+# Started by hand now that it has answered (run 37572057601, all seven jobs passed).
 on:
   workflow_dispatch:
-  push:
-    branches: ["wip/**"]
 permissions:
   contents: read
 env:
