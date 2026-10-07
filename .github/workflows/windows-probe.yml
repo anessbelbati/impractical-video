@@ -132,6 +132,10 @@ jobs:
         run: |
           Get-CimInstance Win32_Process | Where-Object { $_.Name -match "codex|claude" -or $_.CommandLine -match "codex|claude" } | Select-Object ProcessId, ParentProcessId, Name, @{ n = "CommandLine"; e = { if ($_.CommandLine.Length -gt 160) { $_.CommandLine.Substring(0, 160) } else { $_.CommandLine } } } | Format-Table -AutoSize -Wrap
           "browsers:"; Get-Process msedge, chrome, firefox -ErrorAction SilentlyContinue | Group-Object ProcessName | Select-Object Count, Name
+      - name: What the real Codex loads from the hooks file the app writes
+        if: ${{ !cancelled() }}
+        timeout-minutes: 10
+        run: node .github/probe/codex-hooks.mjs
       - name: npm run doctor, with both CLIs now installed and FFmpeg still missing
         if: ${{ !cancelled() }}
         run: npm run doctor
@@ -161,7 +165,7 @@ jobs:
 
   windows-app:
     runs-on: windows-latest
-    timeout-minutes: 45
+    timeout-minutes: 80
     env:
       NEXT_TELEMETRY_DISABLED: "1"
     steps:
@@ -190,12 +194,20 @@ jobs:
         if: ${{ !cancelled() }}
         timeout-minutes: 20
         run: npm run build
+      - name: The whole browser suite three more times
+        if: ${{ !cancelled() }}
+        timeout-minutes: 25
+        run: npx playwright test --repeat-each=3
+      - name: The two browser tests that failed once on Windows, twelve times each
+        if: ${{ !cancelled() }}
+        timeout-minutes: 25
+        run: npx playwright test tests/smoke/local.spec.ts:3 tests/smoke/project-tour.spec.ts:90 --repeat-each=12
 
   linux-all:
     # The project's own CI steps. Its audit step fails on the unchanged main branch today,
     # so here every later step still runs.
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 80
     env:
       NEXT_TELEMETRY_DISABLED: "1"
     steps:
@@ -211,6 +223,12 @@ jobs:
           node node_modules/electron/install.js
           sudo chown root:root node_modules/electron/dist/chrome-sandbox
           sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
+      - name: What the real Codex loads from the hooks file the app writes
+        if: ${{ !cancelled() }}
+        timeout-minutes: 10
+        run: |
+          npm install -g @openai/codex
+          node .github/probe/codex-hooks.mjs
       - name: The context hook, started the way Claude Code and Codex start it
         if: ${{ !cancelled() }}
         timeout-minutes: 6
@@ -256,3 +274,11 @@ jobs:
         run: |
           test ! -L dist/source/video-fs/CLAUDE.md && cmp AGENTS.md dist/source/video-fs/CLAUDE.md
           cmp .gitattributes dist/source/video-fs/.gitattributes
+      - name: The whole browser suite three more times
+        if: ${{ !cancelled() }}
+        timeout-minutes: 25
+        run: npx playwright test --repeat-each=3
+      - name: The browser test that fails on the project's own main branch, twelve times
+        if: ${{ !cancelled() }}
+        timeout-minutes: 25
+        run: npx playwright test tests/smoke/onboarding.spec.ts:31 --repeat-each=12
