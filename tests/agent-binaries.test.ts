@@ -11,7 +11,7 @@ const execFileAsync = promisify(execFile);
 const directories: string[] = [];
 afterEach(async () => { await Promise.all(directories.splice(0).map(dir => rm(dir, { recursive: true, force: true }))); });
 
-// These three launchers are copied from real installs on Windows.
+// These launchers are copied from real installs on Windows.
 
 /** `npm install -g @openai/codex`: a Node script behind the launcher. */
 const NPM_NODE_LAUNCHER = [
@@ -72,6 +72,18 @@ const NPM_OWN_LAUNCHER = [
   "",
   '"%NODE_EXE%" "%NPM_CLI_JS%" %*',
   "",
+].join("\r\n");
+
+/** `yarn global add @openai/codex`: the launcher on PATH forwards to a second one. */
+const YARN_FIRST_LAUNCHER = '@"%~dp0\\..\\..\\Yarn\\Data\\global\\node_modules\\.bin\\codex.cmd"   %*\r\n';
+const YARN_SECOND_LAUNCHER = [
+  '@IF EXIST "%~dp0\\node.exe" (',
+  '  "%~dp0\\node.exe"  "%~dp0\\..\\@openai\\codex\\bin\\codex.js" %*',
+  ") ELSE (",
+  "  @SETLOCAL",
+  "  @SET PATHEXT=%PATHEXT:;.JS;=;%",
+  '  node  "%~dp0\\..\\@openai\\codex\\bin\\codex.js" %*',
+  ")",
 ].join("\r\n");
 
 const windowsEnvironment = { ComSpec: "C:\\Windows\\system32\\cmd.exe", NODE_ENV: "test" } as const;
@@ -170,6 +182,24 @@ describe("agent launch on Windows", () => {
     // A program needs no launcher, and other platforms start whatever was found.
     expect(agentCliLaunch(program, prompt, windowsEnvironment, "win32")).toEqual({ args: prompt, command: program });
     expect(agentCliLaunch(codex, prompt, windowsEnvironment, "linux")).toEqual({ args: prompt, command: codex });
+  });
+
+  it("follows a launcher that forwards to another launcher", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "video-fs-agent-yarn-")); directories.push(root);
+    const modules = path.join(root, "Yarn", "Data", "global", "node_modules");
+    const first = path.join(root, "prefix", "bin", "codex.cmd");
+    const second = path.join(modules, ".bin", "codex.cmd");
+    const script = path.join(modules, "@openai", "codex", "bin", "codex.js");
+    for (const file of [first, second, script]) await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(first, YARN_FIRST_LAUNCHER);
+    await writeFile(second, YARN_SECOND_LAUNCHER);
+    await writeFile(script, "");
+    expect(commandShimTarget(YARN_FIRST_LAUNCHER)).toEqual({ interpreter: null, target: "..\\..\\Yarn\\Data\\global\\node_modules\\.bin\\codex.cmd" });
+    expect(commandShimTarget(YARN_SECOND_LAUNCHER)).toEqual({ interpreter: "node", target: "..\\@openai\\codex\\bin\\codex.js" });
+    expect(agentCliLaunch(first, ["exec", "two words"], windowsEnvironment, "win32")).toEqual({ args: [script, "exec", "two words"], command: "node" });
+    // A chain that never reaches a program is treated like any other batch file.
+    await writeFile(second, YARN_FIRST_LAUNCHER);
+    expect(() => agentCliLaunch(first, ["exec", "two words"], windowsEnvironment, "win32")).toThrow(/cannot receive this command safely/);
   });
 
   it("sends any other batch file through cmd.exe, and only with arguments cmd.exe leaves alone", async () => {
