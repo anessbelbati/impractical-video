@@ -1,0 +1,67 @@
+name: Windows probe
+# Runs the project's own checks on Windows, unchanged, and keeps going after a failure so one run shows everything
+# that breaks. Lives only on work-in-progress branches of this fork.
+on:
+  workflow_dispatch:
+  push:
+    branches: ["wip/**"]
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Environment
+        shell: bash
+        run: |
+          node --version; npm --version; git --version
+          git config --get core.symlinks || echo "core.symlinks unset"
+          ls -la CLAUDE.md AGENTS.md
+          which ffmpeg ffprobe python python3 claude codex 2>&1 || true
+      - run: npm ci
+      - name: npm run setup
+        if: ${{ !cancelled() }}
+        run: npm run setup
+      - name: npm run doctor
+        if: ${{ !cancelled() }}
+        run: npm run doctor
+      - name: npm run lint
+        if: ${{ !cancelled() }}
+        run: npm run lint
+      - name: npm run typecheck
+        if: ${{ !cancelled() }}
+        run: npm run typecheck
+      - name: npm test (vitest)
+        if: ${{ !cancelled() }}
+        run: npm test
+      - name: npm run test:desktop
+        if: ${{ !cancelled() }}
+        run: npm run test:desktop
+      - name: npm run release:scan
+        if: ${{ !cancelled() }}
+        run: npm run release:scan
+      - name: Install Chromium for the smoke tests
+        if: ${{ !cancelled() }}
+        run: npx playwright install chromium
+      - name: npm run test:smoke
+        if: ${{ !cancelled() }}
+        run: npm run test:smoke
+      - name: npm run build
+        if: ${{ !cancelled() }}
+        run: npm run build
+      - name: Upload browser failure diagnostics
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-browser-failures
+          path: test-results/
+          if-no-files-found: ignore
+          retention-days: 7
