@@ -1,6 +1,6 @@
-name: Windows probe
-# Runs the project's own checks on Windows and keeps going after a failure so one run shows everything that breaks.
-# Lives only on work-in-progress branches of this fork.
+name: Fix probe
+# Work in progress on this fork only. Runs every check separately and keeps going after a failure,
+# so one run shows everything that still breaks on Windows and that nothing broke on Linux.
 on:
   workflow_dispatch:
   push:
@@ -8,7 +8,7 @@ on:
 permissions:
   contents: read
 jobs:
-  probe:
+  windows-checks:
     runs-on: windows-latest
     timeout-minutes: 60
     env:
@@ -24,49 +24,12 @@ jobs:
         shell: bash
         run: |
           git config --get core.autocrlf || echo "core.autocrlf unset"
-          git ls-files --eol workflows/vertical-story-episode.md skills/storyboard-image-direction/SKILL.md app/globals.css tests/agent-binaries.test.ts | cat
-      - name: Platform facts
-        if: ${{ !cancelled() }}
-        timeout-minutes: 10
-        run: node .github/probe/facts.mjs
-      - name: Browser process started by the opener
-        if: ${{ !cancelled() }}
-        shell: pwsh
-        run: |
-          Start-Sleep -Seconds 6
-          Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match "example\.com" } | Select-Object -First 3 Name, CommandLine | Format-List
-          Get-Process msedge, chrome, firefox -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-      - name: Agent CLIs installed the usual ways
-        if: ${{ !cancelled() }}
-        timeout-minutes: 12
-        shell: pwsh
-        run: |
-          npm install -g @openai/codex @anthropic-ai/claude-code 2>&1 | Select-Object -Last 6
-          $prefix = (npm prefix -g).Trim()
-          "npm prefix: $prefix"
-          Get-ChildItem $prefix -File | Select-Object -ExpandProperty Name
-          "---- codex.cmd ----"; Get-Content (Join-Path $prefix "codex.cmd")
-          "---- claude.cmd ----"; Get-Content (Join-Path $prefix "claude.cmd")
-          "---- codex (sh stub, first lines) ----"; Get-Content (Join-Path $prefix "codex") -TotalCount 6
-          "---- npm.cmd ----"; Get-Content (Get-Command npm.cmd).Source
-          "---- versions ----"
-          codex --version; "codex --version exit=$LASTEXITCODE"
-          claude --version; "claude --version exit=$LASTEXITCODE"
-          "---- codex exec --help ----"; codex exec --help 2>&1 | Select-Object -First 40
-          "---- codex login status ----"; codex login status 2>&1 | Select-Object -First 10; "exit=$LASTEXITCODE"
-          "---- claude auth status ----"; claude auth status 2>&1 | Select-Object -First 20; "exit=$LASTEXITCODE"
-          "---- claude --help ----"; claude --help 2>&1 | Select-Object -First 70
-          "---- native Claude installer ----"
-          try { irm https://claude.ai/install.ps1 | iex } catch { "installer failed: $_" }
-          Get-ChildItem (Join-Path $env:USERPROFILE ".local\bin") -ErrorAction SilentlyContinue | Select-Object Name, Length
-          "---- package managers for the FFmpeg hint ----"
-          try { winget --version; winget show --id Gyan.FFmpeg --accept-source-agreements 2>&1 | Select-Object -First 12 } catch { "winget unavailable: $_" }
-      - name: npm run setup
-        if: ${{ !cancelled() }}
-        run: npm run setup
-      - name: npm run doctor
-        if: ${{ !cancelled() }}
-        run: npm run doctor
+          git ls-files --eol .env.example workflows/vertical-story-episode.md skills/storyboard-image-direction/SKILL.md app/globals.css tests/agent-binaries.test.ts public/fonts/font-atlas.json | cat
+          echo "files checked out with CRLF outside opencut:"
+          git ls-files --eol | grep -v "opencut/" | grep "w/crlf" | cat
+          git status --short | head -20
+      - name: Electron binary
+        run: node node_modules/electron/install.js
       - name: npm run lint
         if: ${{ !cancelled() }}
         run: npm run lint
@@ -95,20 +58,94 @@ jobs:
           }
           $summary | ForEach-Object { Write-Host $_ }
           if ($summary -match "exit=(?!0$)") { exit 1 }
+      - name: The project's own command, npm run check
+        if: ${{ !cancelled() }}
+        timeout-minutes: 15
+        run: npm run check
+      - name: The concurrent-write test, 25 times
+        if: ${{ !cancelled() }}
+        timeout-minutes: 15
+        shell: pwsh
+        run: |
+          $failed = 0
+          foreach ($round in 1..25) {
+            $log = Join-Path $env:RUNNER_TEMP "write-$round.log"
+            npx vitest run tests/workspace-check.test.ts *> $log
+            if ($LASTEXITCODE -ne 0) { $failed++; "round $round failed"; Get-Content $log | Select-Object -Last 40 }
+          }
+          "concurrent-write test: $failed of 25 rounds failed"
+          if ($failed -gt 0) { exit 1 }
+      - name: npm run setup, then what the app reads back
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          npm run setup
+          Select-String -Path .env.local -Pattern "^VIDEO_FS_DATA_ROOT=" | ForEach-Object { $_.Line }
+          node -e "const nextEnv = require('@next/env'); const { parsedEnv } = nextEnv.loadEnvConfig(process.cwd(), true); const path = require('node:path'); const expected = path.join(process.cwd(), 'data', 'projects'); console.log('read back:', parsedEnv.VIDEO_FS_DATA_ROOT); console.log('expected :', expected); if (parsedEnv.VIDEO_FS_DATA_ROOT !== expected) process.exit(1);"
+      - name: Launchers written by pnpm and Yarn
+        if: ${{ !cancelled() }}
+        timeout-minutes: 12
+        shell: pwsh
+        run: |
+          $found = @()
+          try {
+            npm install -g pnpm 2>&1 | Select-Object -Last 2
+            $env:PNPM_HOME = Join-Path $env:RUNNER_TEMP "pnpm-home"
+            New-Item -ItemType Directory -Force $env:PNPM_HOME | Out-Null
+            $env:Path = "$env:PNPM_HOME;$env:Path"
+            pnpm --version
+            pnpm add -g @openai/codex @anthropic-ai/claude-code 2>&1 | Select-Object -Last 12
+            $found += Get-ChildItem -Recurse -Depth 2 $env:PNPM_HOME -Filter *.cmd -ErrorAction SilentlyContinue | Where-Object { $_.Name -match "^(codex|claude)\.cmd$" } | Select-Object -ExpandProperty FullName
+          } catch { "pnpm part failed: $_" }
+          try {
+            $yarnPrefix = Join-Path $env:RUNNER_TEMP "yarn-prefix"
+            yarn --version
+            yarn global add @openai/codex @anthropic-ai/claude-code --prefix $yarnPrefix 2>&1 | Select-Object -Last 12
+            $found += Get-ChildItem -Recurse -Depth 2 $yarnPrefix -Filter *.cmd -ErrorAction SilentlyContinue | Where-Object { $_.Name -match "^(codex|claude)\.cmd$" } | Select-Object -ExpandProperty FullName
+          } catch { "yarn part failed: $_" }
+          "launchers found:"; $found
+          "PROBE_LAUNCHERS=$($found -join ';')" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - name: The real installers and CLIs through the app's own code
+        if: ${{ !cancelled() }}
+        timeout-minutes: 25
+        env:
+          PROBE_REAL_AGENT_CLIS: "1"
+        run: npx vitest run tests/real-agent-clis.probe.test.ts
+      - name: What is still running after the cancel
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          Get-CimInstance Win32_Process | Where-Object { $_.Name -match "codex|claude" -or $_.CommandLine -match "codex|claude" } | Select-Object ProcessId, ParentProcessId, Name, @{ n = "CommandLine"; e = { if ($_.CommandLine.Length -gt 160) { $_.CommandLine.Substring(0, 160) } else { $_.CommandLine } } } | Format-Table -AutoSize -Wrap
+          "browsers:"; Get-Process msedge, chrome, firefox -ErrorAction SilentlyContinue | Group-Object ProcessName | Select-Object Count, Name
+      - name: npm run doctor, with both CLIs now installed
+        if: ${{ !cancelled() }}
+        run: npm run doctor
+      - name: FFmpeg package name for the install hint
+        if: ${{ !cancelled() }}
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          try { winget --version; winget show --id Gyan.FFmpeg --exact --accept-source-agreements --disable-interactivity 2>&1 | Where-Object { $_ -match "^\S" } | Select-Object -First 25 } catch { "winget unavailable: $_" }
       - name: npm run release:scan
         if: ${{ !cancelled() }}
         run: npm run release:scan
-      - name: Install Chromium for the smoke tests
-        if: ${{ !cancelled() }}
-        run: npx playwright install chromium
+
+  windows-app:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install chromium
       - name: npm run test:smoke
-        if: ${{ !cancelled() }}
         timeout-minutes: 20
         run: npm run test:smoke
-      - name: npm run build
-        if: ${{ !cancelled() }}
-        timeout-minutes: 20
-        run: npm run build
       - name: Upload browser failure diagnostics
         if: ${{ failure() }}
         uses: actions/upload-artifact@v4
@@ -117,3 +154,72 @@ jobs:
           path: test-results/
           if-no-files-found: ignore
           retention-days: 7
+      - name: npm run setup
+        if: ${{ !cancelled() }}
+        run: npm run setup
+      - name: npm run build
+        if: ${{ !cancelled() }}
+        timeout-minutes: 20
+        run: npm run build
+
+  linux-all:
+    # The project's own CI steps. Its audit step fails on the unchanged main branch today,
+    # so here every later step still runs.
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: Configure Electron for Linux tests
+        run: |
+          node node_modules/electron/install.js
+          sudo chown root:root node_modules/electron/dist/chrome-sandbox
+          sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
+      - name: npm run check
+        if: ${{ !cancelled() }}
+        run: xvfb-run --auto-servernum npm run check
+      - name: npm audit (fails on the unchanged main branch too)
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: npm audit --audit-level=high
+      - name: npm run release:scan
+        if: ${{ !cancelled() }}
+        run: npm run release:scan
+      - name: Verify agent guide link
+        if: ${{ !cancelled() }}
+        run: test "$(readlink CLAUDE.md)" = AGENTS.md
+      - name: npm run test:smoke
+        if: ${{ !cancelled() }}
+        run: npm run test:smoke
+      - name: Upload browser failure diagnostics
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-browser-failures
+          path: test-results/
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: npm run setup
+        if: ${{ !cancelled() }}
+        run: npm run setup
+      - name: What setup wrote for the data root
+        if: ${{ !cancelled() }}
+        run: grep '^VIDEO_FS_DATA_ROOT=' .env.local
+      - name: npm run build
+        if: ${{ !cancelled() }}
+        run: npm run build
+      - name: npm run release:source
+        if: ${{ !cancelled() }}
+        run: npm run release:source
+      - name: Verify exported agent guides and the line-ending rule
+        if: ${{ !cancelled() }}
+        run: |
+          test ! -L dist/source/video-fs/CLAUDE.md && cmp AGENTS.md dist/source/video-fs/CLAUDE.md
+          cmp .gitattributes dist/source/video-fs/.gitattributes
