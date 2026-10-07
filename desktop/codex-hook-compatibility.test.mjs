@@ -23,14 +23,6 @@ const selectedSha = "a".repeat(64);
 const contentSha = "b".repeat(64);
 const mainPath = fileURLToPath(new URL("./main.mjs", import.meta.url));
 
-/** The words a shell runs for a generated hook command. The generator
- * single-quotes any word holding a backslash, as every Windows path does. */
-function shellWords(command) {
-  return command
-    .match(/(?:[^\s']+|'[^']*')+/g)
-    .map((word) => word.replaceAll("'", ""));
-}
-
 async function fixture() {
   const directory = await mkdtemp(
     path.join(os.tmpdir(), "video-fs-codex-compat-"),
@@ -131,17 +123,17 @@ async function startServer() {
   };
 }
 
-function runInstalledHook({ projectRoot, statePath }) {
-  const args = [
-    mainPath,
-    "--agent-context-hook",
-    "--agent",
-    "codex",
-    "--project-id",
-    projectId,
-  ];
+/** Codex hands a hook command to the user's shell, which is PowerShell on
+ * Windows, and writes the hook input to that shell's standard input. PowerShell
+ * does not wait for a windowed program such as Electron, so, as Codex does,
+ * this reads the output until the pipes close. */
+function runInstalledHook({ command, projectRoot, statePath }) {
+  const [shell, ...args] =
+    process.platform === "win32"
+      ? ["powershell.exe", "-NoProfile", "-Command", command]
+      : ["/bin/sh", "-c", command];
   return new Promise((resolve, reject) => {
-    const child = spawn(electron, args, {
+    const child = spawn(shell, args, {
       env: {
         ...process.env,
         VIDEO_FS_DESKTOP_STATE_FILE: statePath,
@@ -159,12 +151,12 @@ function runInstalledHook({ projectRoot, statePath }) {
       stderr += chunk;
     });
     child.once("error", reject);
-    child.once("exit", (code) => {
+    child.once("close", (code) => {
       if (code !== 0) {
         reject(new Error(`Installed hook exited ${code}: ${stderr}`));
         return;
       }
-      resolve({ args, output: JSON.parse(stdout), stderr });
+      resolve({ output: JSON.parse(stdout), stderr });
     });
     child.stdin.end(
       JSON.stringify({
@@ -203,18 +195,9 @@ test("installed token-free Codex UserPromptSubmit launcher freezes and injects e
     // Codex loads no hooks from a file with a top-level key it does not know.
     assert.deepEqual(Object.keys(hooks), ["hooks"]);
     const command = hooks.hooks.UserPromptSubmit[0].hooks[0].command;
-    assert.deepEqual(shellWords(command), [
-      electron,
-      mainPath,
-      "--agent-context-hook",
-      "--agent",
-      "codex",
-      "--project-id",
-      projectId,
-    ]);
     assert.doesNotMatch(command, new RegExp(token));
 
-    const result = await runInstalledHook(input);
+    const result = await runInstalledHook({ ...input, command });
     const additionalContext =
       result.output.hookSpecificOutput.additionalContext;
     assert.equal(
