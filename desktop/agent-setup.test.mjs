@@ -67,14 +67,15 @@ test("fresh project receives Claude and Codex project-local configuration at mod
   assert.deepEqual(result.codexProjectRoot, { status: "created" });
   assert.equal(await readlink(path.join(input.projectRoot, "AGENTS.md")), "VIDEO_FS_AGENT_GUIDE.md");
   assert.equal(await readlink(path.join(input.projectRoot, "CLAUDE.md")), "AGENTS.md");
-  assert.equal((await stat(path.join(input.projectRoot, "VIDEO_FS_AGENT_GUIDE.md"))).mode & 0o777, 0o600);
   for (const relativePath of [
+    "VIDEO_FS_AGENT_GUIDE.md",
     ".mcp.json",
     ".claude/settings.json",
     ".codex/config.toml",
     ".codex/hooks.json",
   ]) {
-    assert.equal((await stat(path.join(input.projectRoot, relativePath))).mode & 0o777, 0o600);
+    const mode = (await stat(path.join(input.projectRoot, relativePath))).mode & 0o777;
+    if (process.platform !== "win32") assert.equal(mode, 0o600);
   }
   assert.match(
     await readFile(path.join(input.projectRoot, "AGENTS.md"), "utf8"),
@@ -192,7 +193,8 @@ test("fresh project becomes a valid Codex project root without user Git setup", 
     "rev-parse",
     "--show-toplevel",
   ]);
-  assert.equal(stdout.trim(), await realpath(input.projectRoot));
+  // Git prints forward slashes on every platform.
+  assert.equal(path.resolve(stdout.trim()), await realpath(input.projectRoot));
   await assert.rejects(
     () =>
       execFileAsync("git", [

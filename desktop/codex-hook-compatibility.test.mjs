@@ -10,6 +10,7 @@ import {
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import electron from "electron";
 import { setupAgentProject } from "./agent-setup.mjs";
 import { writePrivateConnectionState } from "./connection-state.mjs";
@@ -20,10 +21,15 @@ const token = "codex-hook-compat-private-token-000000000000";
 const snapshotId = "turn_codex_compat";
 const selectedSha = "a".repeat(64);
 const contentSha = "b".repeat(64);
-const mainPath = path.resolve(
-  path.dirname(new URL(import.meta.url).pathname),
-  "main.mjs",
-);
+const mainPath = fileURLToPath(new URL("./main.mjs", import.meta.url));
+
+/** The words a shell runs for a generated hook command. The generator
+ * single-quotes any word holding a backslash, as every Windows path does. */
+function shellWords(command) {
+  return command
+    .match(/(?:[^\s']+|'[^']*')+/g)
+    .map((word) => word.replaceAll("'", ""));
+}
 
 async function fixture() {
   const directory = await mkdtemp(
@@ -195,18 +201,15 @@ test("installed token-free Codex UserPromptSubmit launcher freezes and injects e
       ),
     );
     const command = hooks.hooks.UserPromptSubmit[0].hooks[0].command;
-    assert.equal(
-      command,
-      [
-        electron,
-        mainPath,
-        "--agent-context-hook",
-        "--agent",
-        "codex",
-        "--project-id",
-        projectId,
-      ].join(" "),
-    );
+    assert.deepEqual(shellWords(command), [
+      electron,
+      mainPath,
+      "--agent-context-hook",
+      "--agent",
+      "codex",
+      "--project-id",
+      projectId,
+    ]);
     assert.doesNotMatch(command, new RegExp(token));
 
     const result = await runInstalledHook(input);
