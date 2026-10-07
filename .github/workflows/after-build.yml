@@ -1,13 +1,12 @@
 name: Second session
 # Work in progress on this fork only. On the project's unchanged main branch a second run of the
 # browser suite in one folder sometimes loses three addresses under /api/projects/<id>/ (they
-# answer with the not-found page), and three tests fail: 9 of 22 second runs on Linux in rounds 9
-# and 10, none of 6 after the dev server's folder was removed first. Round 11 runs the order that
-# failed most ("suite, setup, build, suite") on the unchanged main branch and on two candidate
-# changes, each cut from main:
-#   cold-start  the test server starts the dev server without its saved state (smoke-cold-start)
-#   clean-stop  Playwright stops the test server with SIGTERM and waits for it (smoke-clean-stop)
-# and, on Windows, on the Windows branch with and without the first change.
+# answer with the not-found page), and three tests fail. Round 11, Linux, "suite, setup, build,
+# suite": the second run failed in 4 of 6 jobs on main, in 0 of 8 when the test server starts the
+# dev server without its saved state (branch smoke-cold-start), and in 1 of 6 when Playwright
+# stops the test server with SIGTERM instead (branch smoke-clean-stop).
+# Round 12 repeats the first two on Linux. On macOS, where two runs without the saved state were
+# slow in round 11, it runs the suite with and without it on the same machine, in both orders.
 on:
   workflow_dispatch:
   push:
@@ -18,52 +17,27 @@ env:
   NEXT_TELEMETRY_DISABLED: "1"
 jobs:
   arm:
-    name: ${{ matrix.arm }}-${{ matrix.try }}${{ matrix.os == 'macos-latest' && '-mac' || '' }}
+    name: ${{ matrix.arm }}-${{ matrix.try }}
     strategy:
       fail-fast: false
       matrix:
-        arm: [main, cold-start, clean-stop]
+        arm: [main, cold-start]
         try: [1, 2, 3, 4, 5, 6, 7, 8]
-        os: [ubuntu-latest]
         exclude:
+          - arm: main
+            try: 5
+          - arm: main
+            try: 6
           - arm: main
             try: 7
           - arm: main
             try: 8
-        include:
-          - arm: main
-            try: 1
-            os: macos-latest
-          - arm: cold-start
-            try: 1
-            os: macos-latest
-          - arm: cold-start
-            try: 2
-            os: macos-latest
-          - arm: clean-stop
-            try: 1
-            os: macos-latest
-          - arm: clean-stop
-            try: 2
-            os: macos-latest
-          - arm: win-base
-            try: 1
-            os: windows-latest
-          - arm: win-base
-            try: 2
-            os: windows-latest
-          - arm: win-cold-start
-            try: 1
-            os: windows-latest
-          - arm: win-cold-start
-            try: 2
-            os: windows-latest
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ fromJSON('{"main":"main","cold-start":"smoke-cold-start","clean-stop":"smoke-clean-stop","win-base":"windows-support","win-cold-start":"try-windows-cold-start"}')[matrix.arm] }}
+          ref: ${{ matrix.arm == 'main' && 'main' || 'smoke-cold-start' }}
           fetch-depth: 2
       - name: The commit under test
         shell: bash
@@ -125,28 +99,65 @@ jobs:
             echo "--- size of the dev server's saved state: $(du -sh .next/dev/cache 2>/dev/null | cut -f1)"
           done
 
-  main-build-without-setup:
-    # "npm run build" ends with 1 on the unchanged main branch when "npm run setup" has not run.
-    # Round 10 printed only the build's last lines, which were warnings. This prints its errors.
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+  mac-pair:
+    # The same machine runs the suite twice from an empty .next folder: once with the test server
+    # as on main (saved state on) and once as on the branch (saved state off). Half the jobs run
+    # one first, half the other, so a warm machine does not favour either.
+    name: mac-${{ matrix.first }}-first-${{ matrix.try }}
+    strategy:
+      fail-fast: false
+      matrix:
+        first: [without-cache, with-cache]
+        try: [1, 2, 3]
+    runs-on: macos-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: main
+          ref: smoke-cold-start
+      - name: The commit under test
+        run: git log -1 --format='%H %s'
       - uses: actions/setup-node@v4
         with:
           node-version-file: .nvmrc
           cache: npm
       - run: npm ci
-      - name: npm run build on a fresh checkout, no setup
+      - run: npx playwright install --with-deps chromium
+      - name: The suite with and without the dev server's saved state
         shell: bash
+        env:
+          FIRST: ${{ matrix.first }}
         run: |
           set +e
-          npm run build > build.log 2>&1
-          echo "RESULT build without setup: exit $?"
-          echo "--- lines of the build's output: $(wc -l < build.log | tr -d ' ')"
-          echo "--- its first 25 lines"
-          head -n 25 build.log | cut -c1-200
-          echo "--- every line that says error, outside the warning blocks"
-          grep -n -i -E 'error|missing|not set|required' build.log | grep -v -i -E 'turbopackIgnore|This can slow down' | cut -c1-220 | head -30
+          git fetch --quiet --depth=1 origin main
+          run_suite() {
+            label="$1"
+            if [ "$label" = "with-cache" ]; then
+              git checkout --quiet FETCH_HEAD -- next.config.ts scripts/smoke-server.mjs
+            else
+              git checkout --quiet HEAD -- next.config.ts scripts/smoke-server.mjs
+            fi
+            echo "files that differ from the branch for this run: $(git diff --name-only HEAD | wc -l | tr -d ' ')"
+            rm -rf .next
+            t0=$(date +%s)
+            npx playwright test --reporter=list > "session-$label.log" 2>&1
+            code=$?
+            t1=$(date +%s)
+            echo "RESULT $label: exit $code; $(grep -E '^ +[0-9]+ (passed|failed|flaky|did not run)' "session-$label.log" | tr -s ' ' | tr '\n' ';')"
+            echo "RESULT $label: the whole command took $((t1-t0)) s"
+            echo "RESULT $label: size of the dev server's saved state: $(du -sh .next/dev/cache 2>/dev/null | cut -f1)"
+            echo "RESULT $label: lines saying 'Failed to find Server Action': $(grep -c 'Failed to find Server Action' "session-$label.log")"
+            echo "--- each test and its time"
+            grep -E 'tests/smoke/.*\([0-9.]+(ms|s|m)\)$' "session-$label.log" | sed -E 's/^ +([^ ]+) +[0-9]+ .*tests\/smoke\/([^ ]+) .*\(([0-9.]+[a-z]+)\)$/\1 \2 \3/' | cut -c1-90
+            if [ "$code" != "0" ]; then
+              echo "--- the tests that failed"
+              grep -E '^ +[0-9]+\) ' "session-$label.log" | cut -c1-170
+              echo "--- what each one expected and received"
+              grep -E 'Expected:|Received:|^ +> +[0-9]+ \||SyntaxError|Test timeout' "session-$label.log" | cut -c1-200 | head -40
+            fi
+          }
+          if [ "$FIRST" = "without-cache" ]; then order="without-cache with-cache"; else order="with-cache without-cache"; fi
+          for label in $order; do
+            echo "=== $label ($(date -u +%H:%M:%S) UTC)"
+            run_suite "$label"
+          done
