@@ -5,11 +5,19 @@ import { spawn, spawnSync } from "node:child_process";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import path from "node:path";
+import electron from "electron";
 import { appProject, prompt, recorderHooks, recorderLog } from "./hook-lab.mjs";
 
 const npmRoot = spawnSync("npm root -g", { encoding: "utf8", shell: true }).stdout.trim();
 const codexScript = path.join(npmRoot, "@openai", "codex", "bin", "codex.js");
 console.log("codex:", spawnSync(process.execPath, [codexScript, "--version"], { encoding: "utf8" }).stdout.trim());
+
+// When a person uses the app it is already running, so its program has been read from disk before
+// any hook starts. On a machine that has never started it, the first start alone can take longer
+// than the five seconds the app gives its hook.
+const firstStart = Date.now();
+spawnSync(electron, ["--version"], { stdio: "ignore", timeout: 120_000 });
+console.log(`first start of the app's program on this machine (--version): ${Date.now() - firstStart} ms`);
 
 async function modelServer() {
   const requests = [];
@@ -115,6 +123,9 @@ const project = await appProject("codex-runs-hooks");
 const model = await modelServer();
 const hooksPath = path.join(project.projectRoot, ".codex", "hooks.json");
 const asTheAppWritesIt = await readFile(hooksPath, "utf8");
+const configPath = path.join(project.projectRoot, ".codex", "config.toml");
+const configAsTheAppWritesIt = await readFile(configPath, "utf8");
+console.log(`.codex/config.toml as the app writes it:\n${configAsTheAppWritesIt.trim()}`);
 let homes = 0;
 
 /** A Codex home that knows only the stand-in model server and trusts the project folder. */
@@ -251,6 +262,13 @@ try {
   await execPrompt("1b. The same project through codex exec");
   await onePrompt("1c. The same project when nobody has approved the hook inside Codex yet", { approve: false });
 
+  if (/^env_vars = /m.test(configAsTheAppWritesIt)) {
+    await writeFile(configPath, configAsTheAppWritesIt.replace(/^env_vars = .*\n/m, ""));
+    console.log(`\n.codex/config.toml as the app wrote it before this change:\n${(await readFile(configPath, "utf8")).trim()}`);
+    await onePrompt("1d. The same project with the line that names the display variables taken out again");
+    await writeFile(configPath, configAsTheAppWritesIt);
+  }
+
   await writeFile(hooksPath, `${JSON.stringify({ enableAllProjectMcpServers: true, enabledMcpjsonServers: ["video-fs"], ...withOldCommand }, null, 2)}\n`);
   await onePrompt("2. The hooks file as the app wrote it before this change");
 
@@ -265,6 +283,7 @@ try {
   await whichRecordersRan(recorders);
 } finally {
   await writeFile(hooksPath, asTheAppWritesIt);
+  await writeFile(configPath, configAsTheAppWritesIt);
   await model.close();
   await project.close();
 }

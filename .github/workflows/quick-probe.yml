@@ -8,7 +8,6 @@ permissions:
   contents: read
 env:
   NEXT_TELEMETRY_DISABLED: "1"
-  UPSTREAM_MAIN: 5ed59e018b1ec7881bcef1fe8e13f976c669389c
 jobs:
   hooks-windows:
     runs-on: windows-latest
@@ -139,6 +138,13 @@ jobs:
           node node_modules/electron/install.js
           sudo chown root:root node_modules/electron/dist/chrome-sandbox
           sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
+      - name: The test of what the app writes for the two agents
+        if: ${{ !cancelled() }}
+        run: node --test desktop/agent-setup.test.mjs
+      - name: The app's tool server with only the variables Codex hands an MCP server
+        if: ${{ !cancelled() }}
+        timeout-minutes: 6
+        run: xvfb-run --auto-servernum node .github/probe/tool-server-env.mjs
       - name: The real Codex takes a prompt in a project the app prepared
         if: ${{ !cancelled() }}
         timeout-minutes: 12
@@ -152,9 +158,54 @@ jobs:
           npm install -g @anthropic-ai/claude-code
           xvfb-run --auto-servernum node .github/probe/claude-runs-hooks.mjs
 
-  browser-windows-upload:
-    # On Windows the project's fresh-install test got a 500 for its upload twelve times out of
-    # twelve when it was the first test a server saw, and passed inside the whole suite.
+  linux-suite:
+    # The project's own CI steps with every change. The audit step is left out: it fails on the
+    # unchanged main branch too, since advisories published after its last run.
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: Configure Electron for Linux tests
+        run: |
+          node node_modules/electron/install.js
+          sudo chown root:root node_modules/electron/dist/chrome-sandbox
+          sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
+      - name: npm run check
+        if: ${{ !cancelled() }}
+        run: xvfb-run --auto-servernum npm run check
+      - name: npm run release:scan
+        if: ${{ !cancelled() }}
+        run: npm run release:scan
+      - name: Verify agent guide link
+        if: ${{ !cancelled() }}
+        run: test "$(readlink CLAUDE.md)" = AGENTS.md
+      - name: npm run test:smoke
+        if: ${{ !cancelled() }}
+        run: npm run test:smoke
+      - name: npm run setup
+        if: ${{ !cancelled() }}
+        run: npm run setup
+      - name: npm run build
+        if: ${{ !cancelled() }}
+        run: npm run build
+      - name: npm run release:source
+        if: ${{ !cancelled() }}
+        run: npm run release:source
+      - name: Verify exported agent guides
+        if: ${{ !cancelled() }}
+        run: test ! -L dist/source/video-fs/CLAUDE.md && cmp AGENTS.md dist/source/video-fs/CLAUDE.md
+
+  browser-windows-after-build:
+    # In an earlier round the project's fresh-install browser test failed twelve times out of
+    # twelve on Windows, its upload answered with a 500. That step ran after "npm run setup" and
+    # "npm run build" in the same folder. On a folder that had seen neither it passed six times
+    # out of six. This repeats the earlier order one step at a time.
     runs-on: windows-latest
     timeout-minutes: 75
     steps:
@@ -165,93 +216,86 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx playwright install chromium
-      - name: 1 - their fresh-install test alone, the first thing any server here sees
-        if: ${{ !cancelled() }}
-        timeout-minutes: 12
-        run: npx playwright test tests/smoke/local.spec.ts:3 --repeat-each=2
-      - name: 2 - the upload probe on a new server
-        if: ${{ !cancelled() }}
-        timeout-minutes: 12
-        run: npx playwright test -c .github/probe/browser/playwright.config.ts
-      - name: 3 - the whole suite
-        if: ${{ !cancelled() }}
-        timeout-minutes: 20
-        run: npx playwright test
-      - name: 4 - their fresh-install test alone again
-        if: ${{ !cancelled() }}
-        timeout-minutes: 12
-        run: npx playwright test tests/smoke/local.spec.ts:3 --repeat-each=2
-      - name: 5 - the upload probe again
-        if: ${{ !cancelled() }}
-        timeout-minutes: 12
-        run: npx playwright test -c .github/probe/browser/playwright.config.ts
-      - name: 6 - their fresh-install test alone after the dev server's saved state is removed
+      - name: 1 - after npm run setup, their fresh-install test alone
         if: ${{ !cancelled() }}
         timeout-minutes: 12
         shell: pwsh
         run: |
-          Remove-Item -Recurse -Force .next -ErrorAction SilentlyContinue
+          npm run setup
           npx playwright test tests/smoke/local.spec.ts:3 --repeat-each=2
-
-  browser-linux-upload:
-    # The same first two steps where the suite is known to pass, for comparison.
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version-file: .nvmrc
-          cache: npm
-      - run: npm ci
-      - run: npx playwright install --with-deps chromium
-      - name: 1 - their fresh-install test alone, the first thing any server here sees
+      - name: 2 - after npm run build as well, their fresh-install test alone
         if: ${{ !cancelled() }}
-        timeout-minutes: 10
-        run: npx playwright test tests/smoke/local.spec.ts:3 --repeat-each=2
-      - name: 2 - the upload probe on a new server
-        if: ${{ !cancelled() }}
-        timeout-minutes: 10
-        run: npx playwright test -c .github/probe/browser/playwright.config.ts
-
-  browser-linux-setup-guide:
-    # The browser test that fails on the project's own main branch: with and without the fix, as
-    # the test is written now and as it was.
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version-file: .nvmrc
-          cache: npm
-      - run: npm ci
-      - run: npx playwright install --with-deps chromium
-      - run: git fetch --depth=1 origin "$UPSTREAM_MAIN"
-      - name: The test as written now, the code with the fix, 20 times
+        timeout-minutes: 25
+        shell: pwsh
+        run: |
+          npm run build
+          npx playwright test tests/smoke/local.spec.ts:3 --repeat-each=2
+      - name: 3 - the upload probe
         if: ${{ !cancelled() }}
         timeout-minutes: 12
-        run: npx playwright test tests/smoke/onboarding.spec.ts:31 --repeat-each=20
-      - name: The test as it was, the code with the fix, 40 times
+        run: npx playwright test -c .github/probe/browser/playwright.config.ts
+      - name: 4 - the whole suite
         if: ${{ !cancelled() }}
         timeout-minutes: 20
-        run: |
-          git show "$UPSTREAM_MAIN:tests/smoke/onboarding.spec.ts" > tests/smoke/onboarding.spec.ts
-          npx playwright test tests/smoke/onboarding.spec.ts:31 --repeat-each=40 && echo "RESULT old test, new code: all passed" || echo "RESULT old test, new code: FAILURES"
-          git checkout -- tests/smoke/onboarding.spec.ts
-      - name: The test as written now, the code from before the fix, 6 times
+        run: npx playwright test
+      - name: 5 - the two tests of the earlier round, three times each
         if: ${{ !cancelled() }}
-        timeout-minutes: 12
+        timeout-minutes: 20
+        run: npx playwright test tests/smoke/local.spec.ts:3 tests/smoke/project-tour.spec.ts:90 --repeat-each=3
+
+  clean-branch:
+    # Each branch as it would be proposed, cut from the project's main branch, through the
+    # project's own CI steps (the audit step left out, as above).
+    strategy:
+      fail-fast: false
+      matrix:
+        branch: [codex-hooks-file, setup-guide-reopen]
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.branch }}
+      - name: The commit under test
+        run: git log -1 --format='%H %s'
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Electron binary
+        run: node node_modules/electron/install.js
+      - name: Linux only - browser and Electron sandbox
+        if: ${{ runner.os == 'Linux' }}
         run: |
-          git show "$UPSTREAM_MAIN:components/onboarding/welcome-modal.tsx" > components/onboarding/welcome-modal.tsx
-          git show "$UPSTREAM_MAIN:app/app-shell.tsx" > app/app-shell.tsx
-          npx playwright test tests/smoke/onboarding.spec.ts:31 --repeat-each=6 && echo "RESULT new test, old code: all passed" || echo "RESULT new test, old code: FAILURES"
-      - name: The test as it was, the code from before the fix, 24 times
-        if: ${{ !cancelled() }}
-        timeout-minutes: 15
-        run: |
-          git show "$UPSTREAM_MAIN:components/onboarding/welcome-modal.tsx" > components/onboarding/welcome-modal.tsx
-          git show "$UPSTREAM_MAIN:app/app-shell.tsx" > app/app-shell.tsx
-          git show "$UPSTREAM_MAIN:tests/smoke/onboarding.spec.ts" > tests/smoke/onboarding.spec.ts
-          npx playwright test tests/smoke/onboarding.spec.ts:31 --repeat-each=24 && echo "RESULT old test, old code: all passed" || echo "RESULT old test, old code: FAILURES"
-          git checkout -- tests/smoke/onboarding.spec.ts components/onboarding/welcome-modal.tsx app/app-shell.tsx
+          npx playwright install --with-deps chromium
+          sudo chown root:root node_modules/electron/dist/chrome-sandbox
+          sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
+      - name: npm run check (Linux)
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
+        run: xvfb-run --auto-servernum npm run check
+      - name: npm run check
+        if: ${{ !cancelled() && runner.os != 'Linux' }}
+        run: npm run check
+      - name: npm run release:scan
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
+        run: npm run release:scan
+      - name: npm run test:smoke
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
+        run: npm run test:smoke
+      - name: The setup-guide test twenty more times
+        if: ${{ !cancelled() && runner.os == 'Linux' && matrix.branch == 'setup-guide-reopen' }}
+        run: npx playwright test tests/smoke/onboarding.spec.ts:31 --repeat-each=20
+      - name: npm run setup
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
+        run: npm run setup
+      - name: npm run build
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
+        run: npm run build
+      - name: npm run release:source
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
+        run: npm run release:source
+      - name: Verify exported agent guides
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
+        run: test ! -L dist/source/video-fs/CLAUDE.md && cmp AGENTS.md dist/source/video-fs/CLAUDE.md
