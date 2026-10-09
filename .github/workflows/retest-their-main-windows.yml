@@ -1,0 +1,78 @@
+name: Retest their new main alone on Windows, cloned afresh
+# Work in progress on this fork only. The job "their-main-windows" of "Retest on their new main"
+# (run 37915846873) checked out this branch and then switched to their main. Git leaves the files
+# that are the same in both as they were, so their main ran with this branch's line endings
+# (.gitattributes, eol=lf), not with the CRLF a fresh Windows clone of their main gets. Here their
+# main is cloned afresh: once as Git for Windows gives it, once with core.autocrlf off (the files
+# exactly as stored), to tell the failures that come from line endings from the others.
+on:
+  push:
+    branches: [wip/windows-probe]
+    paths: [.github/workflows/retest-their-main-windows.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  NEXT_TELEMETRY_DISABLED: "1"
+  THEIR_MAIN: 8c389647bf66b0419d312076bcedcec46ca7dbea
+jobs:
+  their-main-windows:
+    name: their-main-windows-${{ matrix.checkout }}
+    strategy:
+      fail-fast: false
+      matrix:
+        checkout: [as-cloned, lf-line-endings]
+    runs-on: windows-latest
+    # Their main alone is the comparison, not a candidate: its failures do not mark the run red.
+    continue-on-error: true
+    timeout-minutes: 60
+    steps:
+      - name: Line endings off before the clone (lf-line-endings only)
+        if: matrix.checkout == 'lf-line-endings'
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+        with:
+          repository: Openpod/impractical-video
+          ref: ${{ env.THEIR_MAIN }}
+      - name: The code under test
+        shell: bash
+        run: |
+          set -e
+          git fetch --quiet https://github.com/Openpod/impractical-video.git main
+          now=$(git rev-parse FETCH_HEAD)
+          echo "their main on GitHub now: $now"
+          if [ "$now" != "$THEIR_MAIN" ]; then echo "THEIR MAIN MOVED (this run expects $THEIR_MAIN)"; exit 1; fi
+          echo "code under test: their main alone, cloned afresh, $(git rev-parse HEAD)"
+          echo "core.autocrlf here: $(git config --get core.autocrlf || echo unset)"
+          echo ".gitattributes in the clone: $(test -f .gitattributes && echo yes || echo no)"
+          echo "files written with CRLF line endings: $(git ls-files --eol | grep -c 'w/crlf' || true)"
+          echo "files written with LF line endings: $(git ls-files --eol | grep -c 'w/lf' || true)"
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Electron binary
+        run: node node_modules/electron/install.js
+      - name: npm test (vitest)
+        if: ${{ !cancelled() }}
+        run: npm test
+      - name: Desktop tests, one file at a time
+        if: ${{ !cancelled() }}
+        timeout-minutes: 30
+        shell: pwsh
+        run: |
+          $summary = @()
+          foreach ($file in (Get-ChildItem desktop -Filter *.test.mjs | Sort-Object Name)) {
+            Write-Host "::group::$($file.Name)"
+            $log = Join-Path $env:RUNNER_TEMP "$($file.BaseName).out"
+            $process = Start-Process -FilePath node -ArgumentList @("--test", "--test-reporter=spec", "desktop/$($file.Name)") -NoNewWindow -PassThru -RedirectStandardOutput $log -RedirectStandardError "$log.err"
+            $null = $process.Handle
+            if ($process.WaitForExit(240000)) { $code = $process.ExitCode } else { taskkill /PID $process.Id /T /F | Out-Null; $code = "TIMEOUT after 240s" }
+            Get-Content $log -ErrorAction SilentlyContinue
+            Get-Content "$log.err" -ErrorAction SilentlyContinue
+            Write-Host "::endgroup::"
+            $summary += "RESULT $($file.Name) exit=$code"
+          }
+          $summary | ForEach-Object { Write-Host $_ }
+          if ($summary -match "exit=(?!0$)") { exit 1 }
