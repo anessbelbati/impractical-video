@@ -1,0 +1,428 @@
+name: Retest on their new main
+# Work in progress on this fork only. Their main moved on Oct 8 2026 to 8c38964 (their pull request
+# #2 merged). The five branches start from the main before it (5ed59e0). Each job here checks out a
+# branch, merges their main into it on the runner (nothing is pushed), and runs the steps that gave
+# the numbers in that branch's text on Oct 7. Their main alone runs beside them where a text compares
+# with it. Every job stops at once if their main has moved again.
+#   checks   the project's own CI steps (the audit step only reports), as in "Quick probe" and
+#            "Dev server routes" on Oct 7; the setup-guide test twenty more times
+#   agents   the real Codex and Claude Code in a project the app prepared, as in "Branch agents"
+#   boots    the smoke server started many times in one folder, as in "Dev server routes"
+on:
+  push:
+    branches: [wip/windows-probe]
+    paths: [.github/workflows/retest-new-main.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  NEXT_TELEMETRY_DISABLED: "1"
+  THEIR_MAIN: 8c389647bf66b0419d312076bcedcec46ca7dbea
+jobs:
+  checks:
+    name: checks-${{ matrix.code }}-${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { code: codex-hooks-file, os: ubuntu-latest }
+          - { code: codex-hooks-file, os: macos-latest }
+          - { code: setup-guide-reopen, os: ubuntu-latest }
+          - { code: setup-guide-reopen, os: macos-latest }
+          - { code: codex-linux-display, os: ubuntu-latest }
+          - { code: codex-linux-display, os: macos-latest }
+          - { code: next-16-4, os: ubuntu-latest }
+          - { code: next-16-4, os: macos-latest }
+          - { code: windows-support, os: ubuntu-latest }
+          - { code: windows-support, os: macos-latest }
+          - { code: windows-support, os: windows-latest }
+          - { code: try-all-five, os: ubuntu-latest }
+          - { code: try-all-five, os: macos-latest }
+          - { code: try-all-five, os: windows-latest }
+          - { code: their-main, os: ubuntu-latest }
+    runs-on: ${{ matrix.os }}
+    # Their main alone is the comparison, not a candidate: its failures do not mark the run red.
+    continue-on-error: ${{ matrix.code == 'their-main' }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.code == 'their-main' && 'wip/windows-probe' || matrix.code }}
+          fetch-depth: 0
+      - name: The code under test
+        shell: bash
+        env:
+          CODE: ${{ matrix.code }}
+        run: |
+          set -e
+          git config user.name "retest-on-runner"
+          git config user.email "retest@users.noreply.github.com"
+          git fetch --quiet https://github.com/Openpod/impractical-video.git main
+          now=$(git rev-parse FETCH_HEAD)
+          echo "their main on GitHub now: $now"
+          if [ "$now" != "$THEIR_MAIN" ]; then echo "THEIR MAIN MOVED (this run expects $THEIR_MAIN)"; exit 1; fi
+          if [ "$CODE" = "their-main" ]; then
+            git checkout --quiet --detach "$THEIR_MAIN"
+            echo "code under test: their main alone, $(git rev-parse HEAD)"
+          else
+            echo "branch head $(git rev-parse HEAD) $(git log -1 --format=%s)"
+            if ! out=$(git merge --no-edit --no-ff "$THEIR_MAIN" 2>&1); then echo "$out"; echo "MERGE FAILED"; exit 1; fi
+            echo "code under test: the branch merged with their main, $(git rev-parse HEAD) (parents $(git log -1 --format=%P))"
+          fi
+          echo "files that differ from their main $THEIR_MAIN:"
+          git diff --stat "$THEIR_MAIN" HEAD | tail -n 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Installed version of next
+        shell: bash
+        run: node -p "'next ' + JSON.parse(require('fs').readFileSync('node_modules/next/package.json', 'utf8')).version"
+      - name: Electron binary
+        run: node node_modules/electron/install.js
+      - name: Browser for the suite
+        if: ${{ runner.os != 'Windows' }}
+        run: npx playwright install --with-deps chromium
+      - name: Linux only - Electron sandbox
+        if: ${{ runner.os == 'Linux' }}
+        run: |
+          sudo chown root:root node_modules/electron/dist/chrome-sandbox
+          sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
+      - name: npm run check (Linux)
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
+        run: xvfb-run --auto-servernum npm run check
+      - name: npm run check
+        if: ${{ !cancelled() && runner.os != 'Linux' }}
+        run: npm run check
+      - name: npm audit, reported only
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
+        shell: bash
+        run: |
+          npm audit --json > "$RUNNER_TEMP/audit.json" || true
+          node -e "const a=require(process.argv[1]);console.log('advisories by severity: '+JSON.stringify(a.metadata.vulnerabilities))" "$RUNNER_TEMP/audit.json"
+      - name: npm run release:scan
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
+        run: npm run release:scan
+      - name: Verify agent guide link
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
+        run: test "$(readlink CLAUDE.md)" = AGENTS.md
+      - name: npm run test:smoke
+        if: ${{ !cancelled() && runner.os != 'Windows' }}
+        run: npm run test:smoke
+      - name: The setup-guide test twenty more times
+        if: ${{ !cancelled() && runner.os == 'Linux' && (matrix.code == 'setup-guide-reopen' || matrix.code == 'their-main') }}
+        run: npx playwright test tests/smoke/onboarding.spec.ts:31 --repeat-each=20
+      - name: npm run setup
+        if: ${{ !cancelled() }}
+        run: npm run setup
+      - name: npm run build
+        if: ${{ !cancelled() }}
+        run: npm run build
+      - name: npm run release:source
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
+        run: npm run release:source
+      - name: Verify exported agent guides
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
+        run: test ! -L dist/source/video-fs/CLAUDE.md && cmp AGENTS.md dist/source/video-fs/CLAUDE.md
+
+  their-main-windows:
+    # Their main alone on Windows: the unit tests, then the desktop tests one file at a time (on
+    # Oct 7 six of them never ended on main, which would hold the whole command).
+    runs-on: windows-latest
+    continue-on-error: true
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: wip/windows-probe
+          fetch-depth: 0
+      - name: The code under test
+        shell: bash
+        run: |
+          set -e
+          git fetch --quiet https://github.com/Openpod/impractical-video.git main
+          now=$(git rev-parse FETCH_HEAD)
+          echo "their main on GitHub now: $now"
+          if [ "$now" != "$THEIR_MAIN" ]; then echo "THEIR MAIN MOVED (this run expects $THEIR_MAIN)"; exit 1; fi
+          git checkout --quiet --detach "$THEIR_MAIN"
+          echo "code under test: their main alone, $(git rev-parse HEAD)"
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Electron binary
+        run: node node_modules/electron/install.js
+      - name: npm test (vitest)
+        if: ${{ !cancelled() }}
+        run: npm test
+      - name: Desktop tests, one file at a time
+        if: ${{ !cancelled() }}
+        timeout-minutes: 30
+        shell: pwsh
+        run: |
+          $summary = @()
+          foreach ($file in (Get-ChildItem desktop -Filter *.test.mjs | Sort-Object Name)) {
+            Write-Host "::group::$($file.Name)"
+            $log = Join-Path $env:RUNNER_TEMP "$($file.BaseName).out"
+            $process = Start-Process -FilePath node -ArgumentList @("--test", "--test-reporter=spec", "desktop/$($file.Name)") -NoNewWindow -PassThru -RedirectStandardOutput $log -RedirectStandardError "$log.err"
+            $null = $process.Handle
+            if ($process.WaitForExit(240000)) { $code = $process.ExitCode } else { taskkill /PID $process.Id /T /F | Out-Null; $code = "TIMEOUT after 240s" }
+            Get-Content $log -ErrorAction SilentlyContinue
+            Get-Content "$log.err" -ErrorAction SilentlyContinue
+            Write-Host "::endgroup::"
+            $summary += "RESULT $($file.Name) exit=$code"
+          }
+          $summary | ForEach-Object { Write-Host $_ }
+          if ($summary -match "exit=(?!0$)") { exit 1 }
+
+  agents:
+    name: agents-${{ matrix.code }}-${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { code: codex-hooks-file, os: ubuntu-latest }
+          - { code: codex-hooks-file, os: macos-latest }
+          - { code: codex-linux-display, os: ubuntu-latest }
+          - { code: windows-support, os: windows-latest }
+          - { code: windows-support, os: ubuntu-latest }
+          - { code: windows-support, os: macos-latest }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.code }}
+          fetch-depth: 0
+      - name: The code under test, with only the probe scripts added
+        shell: bash
+        run: |
+          set -e
+          git config user.name "retest-on-runner"
+          git config user.email "retest@users.noreply.github.com"
+          git fetch --quiet https://github.com/Openpod/impractical-video.git main
+          now=$(git rev-parse FETCH_HEAD)
+          echo "their main on GitHub now: $now"
+          if [ "$now" != "$THEIR_MAIN" ]; then echo "THEIR MAIN MOVED (this run expects $THEIR_MAIN)"; exit 1; fi
+          echo "branch head $(git rev-parse HEAD) $(git log -1 --format=%s)"
+          if ! out=$(git merge --no-edit --no-ff "$THEIR_MAIN" 2>&1); then echo "$out"; echo "MERGE FAILED"; exit 1; fi
+          echo "code under test: the branch merged with their main, $(git rev-parse HEAD) (parents $(git log -1 --format=%P))"
+          echo "files that differ from their main $THEIR_MAIN:"
+          git diff --stat "$THEIR_MAIN" HEAD | tail -n 1
+          git checkout --quiet origin/wip/windows-probe -- .github/probe
+          echo "files added under .github/probe: $(git status --short | grep -c ' .github/probe/')"
+          echo "files changed anywhere else: $(git status --short | grep -vc ' .github/probe/' || true)"
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Electron binary
+        run: node node_modules/electron/install.js
+      - name: Linux only - Electron sandbox
+        if: ${{ runner.os == 'Linux' }}
+        run: |
+          sudo chown root:root node_modules/electron/dist/chrome-sandbox
+          sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
+      - name: Both agents (Windows, installed the way the app installs them)
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        timeout-minutes: 12
+        shell: powershell
+        run: |
+          npm install -g @openai/codex
+          try { irm https://claude.ai/install.ps1 | iex } catch { "the installer failed: $_" }
+          if (-not (Test-Path (Join-Path $HOME ".local\bin\claude.exe"))) { npm install -g @anthropic-ai/claude-code }
+      - name: Both agents
+        if: ${{ !cancelled() && runner.os != 'Windows' }}
+        timeout-minutes: 12
+        run: npm install -g @openai/codex @anthropic-ai/claude-code
+      - name: Linux, display branch - the app's tool server with only the variables Codex hands an MCP server
+        if: ${{ !cancelled() && runner.os == 'Linux' && matrix.code == 'codex-linux-display' }}
+        timeout-minutes: 6
+        run: xvfb-run --auto-servernum node .github/probe/tool-server-env.mjs
+      - name: The real Codex takes a prompt in a project the app prepared (Linux)
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
+        timeout-minutes: 12
+        run: xvfb-run --auto-servernum node .github/probe/codex-runs-hooks.mjs
+      - name: The real Codex takes a prompt in a project the app prepared
+        if: ${{ !cancelled() && runner.os != 'Linux' }}
+        timeout-minutes: 12
+        run: node .github/probe/codex-runs-hooks.mjs
+      - name: The real Claude Code takes a prompt in a project the app prepared (Linux)
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
+        timeout-minutes: 15
+        run: xvfb-run --auto-servernum node .github/probe/claude-runs-hooks.mjs
+      - name: The real Claude Code takes a prompt in a project the app prepared
+        if: ${{ !cancelled() && runner.os != 'Linux' }}
+        timeout-minutes: 15
+        run: node .github/probe/claude-runs-hooks.mjs
+      - name: Windows - the real Codex once more with PowerShell 7 hidden, so that it falls back to Windows PowerShell
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        continue-on-error: true
+        timeout-minutes: 15
+        shell: powershell
+        run: |
+          Rename-Item "C:\Program Files\PowerShell\7" "7-hidden" -ErrorAction Stop
+          try {
+            $env:Path = ($env:Path -split ";" | Where-Object { $_ -and ($_ -notmatch '\\PowerShell\\7') }) -join ";"
+            "pwsh on the search path now: $((Get-Command pwsh -ErrorAction SilentlyContinue).Source)"
+            node .github/probe/codex-runs-hooks.mjs
+          } finally {
+            Rename-Item "C:\Program Files\PowerShell\7-hidden" "7"
+          }
+
+  agents-windows-without-git-bash:
+    # Claude Code starts a hook through Git Bash when it finds one. This hides Git for one step.
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: windows-support
+          fetch-depth: 0
+      - name: The code under test, with only the probe scripts added
+        shell: bash
+        run: |
+          set -e
+          git config user.name "retest-on-runner"
+          git config user.email "retest@users.noreply.github.com"
+          git fetch --quiet https://github.com/Openpod/impractical-video.git main
+          now=$(git rev-parse FETCH_HEAD)
+          echo "their main on GitHub now: $now"
+          if [ "$now" != "$THEIR_MAIN" ]; then echo "THEIR MAIN MOVED (this run expects $THEIR_MAIN)"; exit 1; fi
+          echo "branch head $(git rev-parse HEAD) $(git log -1 --format=%s)"
+          if ! out=$(git merge --no-edit --no-ff "$THEIR_MAIN" 2>&1); then echo "$out"; echo "MERGE FAILED"; exit 1; fi
+          echo "code under test: the branch merged with their main, $(git rev-parse HEAD) (parents $(git log -1 --format=%P))"
+          git checkout --quiet origin/wip/windows-probe -- .github/probe
+          echo "files added under .github/probe: $(git status --short | grep -c ' .github/probe/')"
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Electron binary
+        run: node node_modules/electron/install.js
+      - name: Claude Code from its own installer
+        timeout-minutes: 10
+        shell: powershell
+        run: |
+          try { irm https://claude.ai/install.ps1 | iex } catch { "the installer failed: $_" }
+          if (-not (Test-Path (Join-Path $HOME ".local\bin\claude.exe"))) { npm install -g @anthropic-ai/claude-code }
+      - name: The real Claude Code takes a prompt with Git hidden
+        if: ${{ !cancelled() }}
+        timeout-minutes: 20
+        shell: pwsh
+        run: |
+          Rename-Item "C:\Program Files\Git" "Git-hidden" -ErrorAction Stop
+          try {
+            $env:Path = ($env:Path -split ";" | Where-Object { $_ -and ($_ -notmatch '\\Git(\\|$)') }) -join ";"
+            Remove-Item Env:CLAUDE_CODE_GIT_BASH_PATH -ErrorAction SilentlyContinue
+            "git on the search path now: $((Get-Command git -ErrorAction SilentlyContinue).Source)"
+            "bash on the search path now: $((Get-Command bash -ErrorAction SilentlyContinue).Source)"
+            node .github/probe/claude-runs-hooks.mjs
+          } finally {
+            Rename-Item "C:\Program Files\Git-hidden" "Git"
+          }
+
+  boots:
+    name: boots-${{ matrix.code }}-${{ matrix.os == 'macos-latest' && 'mac' || 'linux' }}-${{ matrix.try }}
+    strategy:
+      fail-fast: false
+      matrix:
+        code: [their-main, next-16-4]
+        os: [ubuntu-latest]
+        try: [1, 2]
+        include:
+          - { code: their-main, os: macos-latest, try: 1 }
+          - { code: next-16-4, os: macos-latest, try: 1 }
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.code == 'their-main' }}
+    timeout-minutes: 80
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.code == 'their-main' && 'wip/windows-probe' || matrix.code }}
+          fetch-depth: 0
+      - name: The code under test, with only the probe script added
+        shell: bash
+        env:
+          CODE: ${{ matrix.code }}
+        run: |
+          set -e
+          git config user.name "retest-on-runner"
+          git config user.email "retest@users.noreply.github.com"
+          git fetch --quiet https://github.com/Openpod/impractical-video.git main
+          now=$(git rev-parse FETCH_HEAD)
+          echo "their main on GitHub now: $now"
+          if [ "$now" != "$THEIR_MAIN" ]; then echo "THEIR MAIN MOVED (this run expects $THEIR_MAIN)"; exit 1; fi
+          if [ "$CODE" = "their-main" ]; then
+            git checkout --quiet --detach "$THEIR_MAIN"
+            echo "code under test: their main alone, $(git rev-parse HEAD)"
+          else
+            echo "branch head $(git rev-parse HEAD) $(git log -1 --format=%s)"
+            if ! out=$(git merge --no-edit --no-ff "$THEIR_MAIN" 2>&1); then echo "$out"; echo "MERGE FAILED"; exit 1; fi
+            echo "code under test: the branch merged with their main, $(git rev-parse HEAD) (parents $(git log -1 --format=%P))"
+          fi
+          echo "files that differ from their main $THEIR_MAIN:"
+          git diff --stat "$THEIR_MAIN" HEAD | tail -n 1
+          git checkout --quiet origin/wip/windows-probe -- .github/probe/boot-routes.mjs
+          echo "probe files added: $(git status --short | grep -c 'boot-routes.mjs')"
+          echo "files changed anywhere else: $(git status --short | grep -vc 'boot-routes.mjs' || true)"
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Installed version of next
+        shell: bash
+        run: node -p "'next ' + JSON.parse(require('fs').readFileSync('node_modules/next/package.json', 'utf8')).version"
+      - run: npx playwright install --with-deps chromium
+      - name: Suite, setup, build, suite
+        shell: bash
+        run: |
+          set +e
+          listed() { if grep -q -F "\"$1\"" .next/dev/types/routes.d.ts 2>/dev/null; then echo yes; else echo no; fi; }
+          n=0
+          for step in suite setup build suite; do
+            n=$((n+1))
+            echo "=== step $n: $step ($(date -u +%H:%M:%S) UTC)"
+            case "$step" in
+              suite)
+                t0=$(date +%s)
+                npx playwright test > "$RUNNER_TEMP/session-$n.log" 2>&1
+                code=$?
+                t1=$(date +%s)
+                echo "RESULT step $n suite: exit $code; $(grep -E '^ +[0-9]+ (passed|failed|flaky|did not run)' "$RUNNER_TEMP/session-$n.log" | tr -s ' ' | tr '\n' ';')"
+                echo "RESULT step $n suite: the whole command took $((t1-t0)) s"
+                echo "RESULT step $n suite: lines saying 'Failed to find Server Action': $(grep -c 'Failed to find Server Action' "$RUNNER_TEMP/session-$n.log")"
+                echo "RESULT step $n suite: lines saying 'discovery failed 404': $(grep -c 'discovery failed 404' "$RUNNER_TEMP/session-$n.log")"
+                echo "RESULT step $n suite: the route list the dev server left: $(wc -l < .next/dev/types/routes.d.ts 2>/dev/null | tr -d ' ') lines; lists chat/stream: $(listed '/api/projects/[id]/chat/stream'); canvas/upload: $(listed '/api/projects/[id]/canvas/upload'); media: $(listed '/api/projects/[id]/media/[...path]'); tracks: $(listed '/api/projects/[id]/tracks'); the project itself: $(listed '/api/projects/[id]')"
+                if [ "$code" != "0" ]; then
+                  echo "--- the tests that failed"
+                  grep -E '^ +[0-9]+\) ' "$RUNNER_TEMP/session-$n.log" | cut -c1-170
+                  echo "--- what each one expected and received"
+                  grep -E 'Expected:|Received:|^ +> +[0-9]+ \||SyntaxError|Test timeout' "$RUNNER_TEMP/session-$n.log" | cut -c1-200 | head -40
+                fi
+                ;;
+              setup)
+                npm run setup
+                ;;
+              build)
+                npm run build > "$RUNNER_TEMP/build-$n.log" 2>&1
+                code=$?
+                echo "RESULT step $n build: exit $code"
+                if [ "$code" != "0" ]; then
+                  echo "--- the build's error lines"
+                  grep -n -E 'error TS[0-9]+|Type error|Failed to compile|Build error|^Error' "$RUNNER_TEMP/build-$n.log" | cut -c1-200 | head -12
+                fi
+                ;;
+            esac
+            echo "--- size of the dev server's saved state: $(du -sh .next/dev/cache 2>/dev/null | cut -f1)"
+          done
+      - name: Starts of the smoke server in the same folder
+        shell: bash
+        env:
+          BOOTS: ${{ matrix.os == 'macos-latest' && '12' || '20' }}
+        run: node .github/probe/boot-routes.mjs
