@@ -1,0 +1,131 @@
+name: Agent media
+# Work in progress on this fork only. A picture an agent places on the Editor timeline with
+# editor_edit comes out black when the edit document's media map does not list the file yet:
+# the server writes a placeholder media id that the browser adopted only right after a first
+# import. Branch editor-adopt-seeded-media fixes that and adds a browser test.
+# Each job starts the dev server once in a fresh checkout: on next 16.3.6 a second start in the
+# same folder can come up with routes missing (vercel/next.js#96139).
+on:
+  push:
+    branches: [wip/windows-probe]
+    paths: [.github/workflows/agent-media.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  NEXT_TELEMETRY_DISABLED: "1"
+  FIX_BRANCH: editor-adopt-seeded-media
+  THEIR_MAIN: 8c389647bf66b0419d312076bcedcec46ca7dbea
+jobs:
+  agent-media:
+    name: agent-media-${{ matrix.code }}
+    strategy:
+      fail-fast: false
+      matrix:
+        code: [their-main, fix]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: editor-adopt-seeded-media
+          fetch-depth: 0
+      - name: The code under test
+        shell: bash
+        run: |
+          git log -1 --format='branch head %H %s'
+          if [ "${{ matrix.code }}" = "their-main" ]; then
+            git checkout "$THEIR_MAIN" -- opencut/host/editor-mount.tsx
+            git rm --quiet opencut/host/placeholder-media.ts tests/placeholder-media.test.ts
+          fi
+          echo "files that differ from their main $THEIR_MAIN:"
+          git diff --stat "$THEIR_MAIN"
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: The new browser test, ten times, one dev-server start
+        continue-on-error: ${{ matrix.code == 'their-main' }}
+        env:
+          PLAYWRIGHT_JSON_OUTPUT_NAME: results.json
+        run: npx playwright test tests/smoke/editor-agent-media.spec.ts --repeat-each=10 --reporter=list,json
+      - name: Count the results
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          cat > /tmp/summarize.mjs <<'EOF'
+          import { readFileSync } from "node:fs";
+          const report = JSON.parse(readFileSync("results.json", "utf8"));
+          const counts = new Map();
+          const failures = [];
+          const walk = (suite) => {
+            for (const child of suite.suites ?? []) walk(child);
+            for (const spec of suite.specs ?? []) {
+              for (const test of spec.tests) {
+                for (const result of test.results) {
+                  const entry = counts.get(spec.title) ?? { passed: 0, failed: 0, other: 0 };
+                  if (result.status === "passed") entry.passed += 1;
+                  else if (result.status === "failed" || result.status === "timedOut") {
+                    entry.failed += 1;
+                    const first = (result.error?.message ?? "").split("\n").find((line) => line.trim()) ?? "";
+                    failures.push(`FAIL ${spec.title} | ${first.replace(/\u001b\[[0-9;]*m/g, "").slice(0, 300)}`);
+                  } else entry.other += 1;
+                  counts.set(spec.title, entry);
+                }
+              }
+            }
+          };
+          for (const suite of report.suites ?? []) walk(suite);
+          for (const [title, entry] of counts) {
+            console.log(`RESULT ${process.env.CODE} | ${title} | passed ${entry.passed}, failed ${entry.failed}, other ${entry.other}`);
+          }
+          for (const line of failures) console.log(line);
+          EOF
+          CODE="${{ matrix.code }}" node /tmp/summarize.mjs
+          echo "preview pictures saved: $(find test-results -name preview.png | wc -l)"
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: agent-media-${{ matrix.code }}
+          path: |
+            test-results/
+            results.json
+          if-no-files-found: ignore
+          retention-days: 14
+
+  fix-project-checks:
+    # The project's own checks on the fix branch, in the project's CI order up to the browser
+    # suite, without the audit step (it stops on main too).
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: editor-adopt-seeded-media
+      - name: The code under test
+        run: git log -1 --format='%H %s'
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: Configure Electron for Linux tests
+        run: |
+          node node_modules/electron/install.js
+          sudo chown root:root node_modules/electron/dist/chrome-sandbox
+          sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
+      - name: npm run check
+        run: xvfb-run --auto-servernum npm run check
+      - name: npm run test:smoke (the whole suite, the new test included)
+        if: ${{ !cancelled() }}
+        run: npm run test:smoke
+      - uses: actions/upload-artifact@v4
+        if: ${{ failure() }}
+        with:
+          name: fix-project-checks-failures
+          path: test-results/
+          if-no-files-found: ignore
+          retention-days: 14
