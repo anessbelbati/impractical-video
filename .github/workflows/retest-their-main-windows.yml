@@ -14,7 +14,7 @@ permissions:
   contents: read
 env:
   NEXT_TELEMETRY_DISABLED: "1"
-  THEIR_MAIN: 8c389647bf66b0419d312076bcedcec46ca7dbea
+  THEIR_MAIN: 2e9b99e383d86f96180564d7162c813036af33f3
 jobs:
   their-main-windows:
     name: their-main-windows-${{ matrix.checkout }}
