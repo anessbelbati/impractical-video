@@ -2,9 +2,9 @@ name: Agent media
 # Work in progress on this fork only. A picture an agent places on the Editor timeline with
 # editor_edit comes out black when the edit document's media map does not list the file yet:
 # the server writes a placeholder media id that the browser adopted only right after a first
-# import. Branch editor-adopt-seeded-media fixes that and adds a browser test.
-# Each job starts the dev server once in a fresh checkout: on next 16.3.6 a second start in the
-# same folder can come up with routes missing (vercel/next.js#96139).
+# import. Branch fix/agent-placed-media fixes that and adds a browser test: the three commits of
+# editor-adopt-seeded-media (tested on their main of Oct 8), replayed on their main of Oct 12.
+# Each job starts the dev server once in a fresh checkout.
 on:
   push:
     branches: [wip/windows-probe]
@@ -14,8 +14,8 @@ permissions:
   contents: read
 env:
   NEXT_TELEMETRY_DISABLED: "1"
-  FIX_BRANCH: editor-adopt-seeded-media
-  THEIR_MAIN: 8c389647bf66b0419d312076bcedcec46ca7dbea
+  FIX_BRANCH: fix/agent-placed-media
+  THEIR_MAIN: 2e9b99e383d86f96180564d7162c813036af33f3
 jobs:
   agent-media:
     name: agent-media-${{ matrix.code }}
@@ -28,7 +28,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: editor-adopt-seeded-media
+          ref: fix/agent-placed-media
           fetch-depth: 0
       - name: The code under test
         shell: bash
@@ -97,13 +97,13 @@ jobs:
 
   fix-project-checks:
     # The project's own checks on the fix branch, in the project's CI order up to the browser
-    # suite, without the audit step (it stops on main too).
+    # suite. Their whole CI (ci.yml, audit included) is started on the branch separately.
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: editor-adopt-seeded-media
+          ref: fix/agent-placed-media
       - name: The code under test
         run: git log -1 --format='%H %s'
       - uses: actions/setup-node@v4
